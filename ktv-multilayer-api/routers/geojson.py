@@ -5,7 +5,7 @@ Handles file upload and GeoJSON processing endpoints
 import os
 import json
 import tempfile
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -289,3 +289,126 @@ async def process_geojson(request: GeoJSONRequest):
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             }
         )
+
+# =================Route for GEE Tile Services=========================
+
+# Import GEE service (lazy loading to avoid startup errors)
+def _get_gee_service():
+    """Get GEE service with lazy loading"""
+    try:
+        from services.gee_dataset_service import gee_dataset_service
+        return gee_dataset_service
+    except ImportError as e:
+        logger.error(f"Failed to import GEE service: {e}")
+        raise HTTPException(
+            status_code=503, 
+            detail="GEE Tile Service not available. Please install Earth Engine dependencies."
+        )
+
+@router.get("/gee/datasets", tags=["GEE Tile Services"])
+async def get_gee_datasets():
+    """
+    Get list of available Google Earth Engine datasets for EUDR compliance.
+    
+    Returns 6 core datasets:
+    - **gfw**: Global Forest Watch forest cover
+    - **gfw_loss**: GFW deforestation 2021-2024
+    - **jrc**: Joint Research Centre forest cover 2020
+    - **jrc_loss**: JRC deforestation 2021-2024  
+    - **sbtn**: Science Based Targets Network natural lands
+    - **sbtn_loss**: SBTN deforestation 2021-2024
+    
+    Each dataset includes visualization parameters and usage examples.
+    """
+    try:
+        gee_service = _get_gee_service()
+        return gee_service.get_available_datasets()
+    except Exception as e:
+        logger.error(f"Error getting GEE datasets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/gee/tiles/{dataset}/{z}/{x}/{y}", tags=["GEE Tile Services"])
+async def get_gee_tile(
+    dataset: str,
+    z: int,
+    x: int, 
+    y: int,
+    style: Optional[str] = Query("default", description="Visualization style (default, red, orange, light_green, dark_green, blue, purple)")
+):
+    """
+    Get map tile for specific Google Earth Engine dataset.
+    
+    **Parameters:**
+    - **dataset**: Dataset name (gfw, gfw_loss, jrc, jrc_loss, sbtn, sbtn_loss)
+    - **z**: Zoom level (0-18)
+    - **x**: Tile X coordinate
+    - **y**: Tile Y coordinate
+    - **style**: Visualization style for colors
+    
+    **Returns:** Redirects to Earth Engine tile URL
+    
+    **Usage Examples:**
+    ```javascript
+    // Leaflet
+    L.tileLayer('https://your-api.com/api/v1/gee/tiles/gfw_loss/{z}/{x}/{y}').addTo(map);
+    
+    // OpenLayers  
+    new ol.layer.Tile({
+        source: new ol.source.XYZ({
+            url: 'https://your-api.com/api/v1/gee/tiles/jrc/{z}/{x}/{y}'
+        })
+    });
+    ```
+    """
+    try:
+        gee_service = _get_gee_service()
+        return gee_service.get_tile(dataset, z, x, y, style)
+    except Exception as e:
+        logger.error(f"Error getting GEE tile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/gee/tiles/{dataset}", tags=["GEE Tile Services"])
+async def get_gee_dataset_info(
+    dataset: str,
+    request: Request
+):
+    """
+    Get dataset information and tile URL template for web mapping libraries.
+    
+    **Parameters:**
+    - **dataset**: Dataset name (gfw, gfw_loss, jrc, jrc_loss, sbtn, sbtn_loss)
+    
+    **Returns:**
+    - Dataset metadata and description
+    - Tile URL templates for different mapping libraries
+    - Available visualization styles
+    - Code examples for Leaflet, OpenLayers, and MapBox
+    
+    **Perfect for:** Setting up web maps with EUDR compliance layers
+    """
+    try:
+        gee_service = _get_gee_service()
+        base_url = f"{request.url.scheme}://{request.url.netloc}"
+        return gee_service.get_dataset_info(dataset, base_url)
+    except Exception as e:
+        logger.error(f"Error getting GEE dataset info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/gee/refresh", tags=["GEE Tile Services"])
+async def refresh_gee_datasets():
+    """
+    Refresh Google Earth Engine datasets and reinitialize tile service.
+    
+    **Use this endpoint when:**
+    - Earth Engine service needs to be restarted
+    - Dataset cache needs to be cleared
+    - After updating service account credentials
+    
+    **Returns:** Success message with timestamp and dataset count
+    """
+    try:
+        gee_service = _get_gee_service()
+        return gee_service.refresh_datasets()
+    except Exception as e:
+        logger.error(f"Error refreshing GEE datasets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
