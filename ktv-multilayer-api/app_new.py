@@ -53,9 +53,8 @@ app = FastAPI(
     
     **🚀 Quick Start:**
     1. **Single Point Analysis**: Use `/api/v1/eudr-compliance`
-    2. **File Upload (Simple)**: Use `/api/v1/upload-geojson` (supports drag & drop in Swagger)
-    3. **File Upload (KTV)**: Use `/api/v1/multilayer_processing_ktv` (compatible with existing code)
-    4. **JSON Processing**: Use `/api/v1/process-geojson` for direct JSON requests
+    2. **File Upload**: Use `/api/v1/upload-geojson` (supports drag & drop in Swagger)
+    3. **JSON Processing**: Use `/api/v1/process-geojson` for direct JSON requests
     
     **📁 File Upload Support:**
     - Maximum file size: 50MB

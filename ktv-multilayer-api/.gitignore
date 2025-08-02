@@ -18,6 +18,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Earth Engine Service Account Credentials
+authentication/*.json
+authentication/eudr-*.json
+
+# Environment variables
+.env
+authentication/.env
 MANIFEST
 
 .env
@@ -49,3 +57,16 @@ temp_*
 # Fly.io
 .flyctl
 fly.toml.bak
+
+# Environment files (SECURITY: Never commit these!)
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.env
+
+# Google Service Account Keys (CRITICAL SECURITY!)
+authentication/*.json
+*.json
+service-account-*.json
