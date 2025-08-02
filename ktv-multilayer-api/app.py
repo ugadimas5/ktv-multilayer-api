@@ -86,12 +86,12 @@ app = FastAPI(
     },
     servers=[
         {
-            "url": "http://localhost:8000",
-            "description": "Development server"
+            "url": "https://eudr-multilayer-api.fly.dev",
+            "description": "Production server"
         },
         {
-            "url": "https://api.forestapi.com",
-            "description": "Production server"
+            "url": "http://localhost:8000",
+            "description": "Development server"
         }
     ]
 )
