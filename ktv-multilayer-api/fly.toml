@@ -1,4 +1,4 @@
-app = "ktv-multilayer-api"
+app = "eudr-multilayer-api"
 primary_region = "sin"
 
 [build]
@@ -30,7 +30,7 @@ primary_region = "sin"
   memory_mb = 512
 
 [[mounts]]
-  source = "ktv_data"
+  source = "eudr_data"
   destination = "/app/data"
 
 # Tambahan untuk deployment optimization
