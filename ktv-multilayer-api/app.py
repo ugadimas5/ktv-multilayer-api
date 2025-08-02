@@ -105,6 +105,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Root health endpoint for fly.io health checks
+@app.get("/health")
+async def root_health():
+    """Root health check endpoint for Fly.io and RapidAPI"""
+    from datetime import datetime
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "EUDR Forest Compliance API",
+        "version": "2.1.0",
+        "environment": "production"
+    }
+
 # Include routers
 app.include_router(general_router)
 app.include_router(eudr_router)
