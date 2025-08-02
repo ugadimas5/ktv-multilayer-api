@@ -26,9 +26,14 @@ class GeoJSONRequest(BaseModel):
 @router.post("/upload-geojson", tags=["EUDR File Upload"])
 async def upload_geojson_file(file: UploadFile = File(...)):
     """
-    Upload dan proses file GeoJSON dengan 3 dataset EUDR (GFW, JRC, SBTN)
-    Menggunakan parallel processing dengan 16 service accounts
-    Output: Analisis risiko untuk setiap feature dengan binary classification
+    Upload and analyze GeoJSON file for EUDR compliance using satellite datasets.
+    
+    Processes each feature in the uploaded GeoJSON file against three key datasets:
+    - GFW (Global Forest Watch) tree cover loss
+    - JRC (Joint Research Centre) annual forest cover change  
+    - SBTN (Science Based Targets Network) forest loss data
+    
+    Returns risk assessment with binary classification (compliant/non-compliant) for each feature.
     """
     logger.info("EUDR File Upload: Starting...")
     
@@ -59,7 +64,7 @@ async def upload_geojson_file(file: UploadFile = File(...)):
             os.unlink(tmp_path)
             raise HTTPException(status_code=400, detail="Invalid GeoJSON structure")
         
-        # Process dengan multilayer service
+        # Process with multilayer service
         from services.data.multilayer_service import MultilayerService
         
         service = MultilayerService()
@@ -109,13 +114,17 @@ async def upload_geojson_file(file: UploadFile = File(...)):
 @router.post("/multilayer_processing_ktv", tags=["EUDR Multilayer Processing"])
 async def multilayer_processing_ktv(file: UploadFile = File(...)):
     """
-    Process GeoJSON dengan 3 dataset (GFW, JRC, SBTN) dan generate statistik loss
-    Output: GeoJSON dengan attribut loss untuk setiap dataset
+    Process GeoJSON with 3 forest datasets (GFW, JRC, SBTN) and generate loss statistics.
+    
+    Analyzes uploaded GeoJSON features against multiple satellite datasets to calculate
+    forest loss metrics and generate comprehensive loss statistics for each dataset.
+    
+    Returns: Enhanced GeoJSON with loss attributes for each dataset.
     """
     logger.info("KTV Multilayer Processing: Starting...")
     
     try:
-        # Import di dalam fungsi untuk menghindari import error saat startup
+        # Import inside function to avoid import errors at startup
         from services.data.multilayer_service import MultilayerService
         
         # Save uploaded file
@@ -133,14 +142,14 @@ async def multilayer_processing_ktv(file: UploadFile = File(...)):
         if not service_account_path:
             raise ValueError("EE_SERVICE_ACCOUNT_PATH not set in .env file")
         
-        # Parse GeoJSON dari file
+        # Parse GeoJSON from file
         try:
             geojson_data = json.loads(contents.decode('utf-8'))
         except json.JSONDecodeError as e:
             os.unlink(tmp_path)
             raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
         
-        # Process dengan multilayer service
+        # Process with multilayer service
         service = MultilayerService()
         start_time = datetime.now()
         result_geojson = service.process_geojson(geojson_data)
