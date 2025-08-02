@@ -5,11 +5,11 @@ primary_region = "sin"
 
 [env]
   APP_ENV = "production"
-  PORT = "8080"
+  PORT = "8000"
   PYTHONPATH = "/app"
 
 [http_service]
-  internal_port = 8080
+  internal_port = 8000
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true
@@ -17,18 +17,25 @@ primary_region = "sin"
   processes = ["app"]
 
 [[http_service.checks]]
-  interval = "15s"
-  grace_period = "5s"
+  interval = "30s"
+  grace_period = "10s"
   method = "get"
   path = "/health"
   protocol = "http"
-  timeout = "10s"
+  timeout = "15s"
 
 [vm]
   cpu_kind = "shared"
-  cpus = 2
-  memory_mb = 2048
+  cpus = 1
+  memory_mb = 512
 
 [[mounts]]
   source = "ktv_data"
   destination = "/app/data"
+
+# Tambahan untuk deployment optimization
+[processes]
+  app = "python app.py"
+
+[deploy]
+  strategy = "rolling"
