@@ -20,39 +20,47 @@ class GEEDatasetService:
         self.ee_image = None
         self.is_initialized = False
         
-    def authenticate_ee(self) -> None:
-        """Initialize Earth Engine with service account"""
+    def authenticate_ee(self, single_account: bool = False) -> None:
+        """
+        Initialize Earth Engine with service account.
+        If single_account=True, use EE_SINGLE_SERVICE_ACCOUNT_PATH.
+        """
         try:
-            service_account_path = os.getenv("EE_SERVICE_ACCOUNT_PATH")
-            if not service_account_path:
-                raise ValueError("EE_SERVICE_ACCOUNT_PATH not set in .env file")
-            
-            # Convert relative path to absolute path
+            if single_account:
+                service_account_path = os.getenv("EE_SINGLE_SERVICE_ACCOUNT_PATH")
+                if not service_account_path:
+                    raise ValueError("EE_SINGLE_SERVICE_ACCOUNT_PATH not set in .env file")
+            else:
+                service_account_path = os.getenv("EE_SERVICE_ACCOUNT_PATH")
+                if not service_account_path:
+                    raise ValueError("EE_SERVICE_ACCOUNT_PATH not set in .env file")
+
+            # Convert to absolute path if needed
             if not os.path.isabs(service_account_path):
-                # Get project root directory (3 levels up from this file)
                 project_root = Path(__file__).parent.parent.parent
                 service_account_path = project_root / service_account_path
-            
-            service_account_path = str(service_account_path)
-            
-            if not os.path.exists(service_account_path):
-                raise FileNotFoundError(f"Service account file not found: {service_account_path}")
-            
+            else:
+                service_account_path = Path(service_account_path)
+
+            # Ensure path is a file
+            if not service_account_path.is_file():
+                raise FileNotFoundError(f"Service account file not found or is not a file: {service_account_path}")
+
             logger.info(f"Using service account: {service_account_path}")
-            
+
             # Initialize EE with service account
             credentials = ee.ServiceAccountCredentials(
                 email=None,  # Will be read from the JSON file
-                key_file=service_account_path
+                key_file=str(service_account_path)
             )
             ee.Initialize(credentials)
-            
+
             # Load datasets
             self.ee_image = self._get_ee_datasets()
             self.is_initialized = True
-            
+
             logger.info("Earth Engine initialized successfully for tile serving")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize Earth Engine: {e}")
             raise HTTPException(status_code=500, detail=f"EE initialization failed: {str(e)}")
@@ -186,7 +194,7 @@ class GEEDatasetService:
         """Get map tile for specific dataset"""
         if not self.is_initialized or self.ee_image is None:
             logger.info("Initializing Earth Engine for tile service...")
-            self.authenticate_ee()
+            self.authenticate_ee(single_account=True)
         
         # Get available datasets
         available_datasets = self.get_available_datasets()["datasets"]
