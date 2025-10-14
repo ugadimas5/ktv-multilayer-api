@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from datetime import datetime
 from loguru import logger
+from services.data.multilayer_service import MultilayerService
+import ee
 
 # Router instance
 router = APIRouter(
@@ -22,6 +24,69 @@ router = APIRouter(
 class GeoJSONRequest(BaseModel):
     geojson: Dict[str, Any]
     analysis_params: Optional[Dict[str, Any]] = {}
+
+@router.post("/upload-geojson-notrounded", tags=["EUDR File Upload"], summary="Upload GeoJSON and get unrounded results")
+async def upload_geojson_notrounded(file: UploadFile = File(...)):
+    """
+    Upload and analyze GeoJSON file for EUDR compliance, returning unrounded area/percent values.
+    """
+    logger.info("EUDR File Upload (notrounded): Starting...")
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".geojson") as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            tmp_path = tmp.name
+        logger.info(f"EUDR File Upload (notrounded): File saved to {tmp_path}")
+        file_size_mb = len(contents) / (1024 * 1024)
+        if file_size_mb > 50:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=413, detail=f"File too large: {file_size_mb:.1f}MB. Max: 50MB")
+        try:
+            geojson_data = json.loads(contents.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+        if "type" not in geojson_data or geojson_data["type"] not in ["FeatureCollection", "Feature"]:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=400, detail="Invalid GeoJSON structure")
+        service = MultilayerService()
+        start_time = datetime.now()
+        # Gunakan multiprocessing dan mode notrounded
+        result = service.process_geojson(geojson_data, notrounded=True)
+        processing_time = (datetime.now() - start_time).total_seconds()
+        os.unlink(tmp_path)
+        features_count = len(geojson_data.get("features", [geojson_data]))
+        high_risk_count = sum(1 for r in result.get('results', []) if r.get('risk_level') == 'High')
+        low_risk_count = features_count - high_risk_count
+        logger.success("EUDR File Upload (notrounded): Processing completed successfully")
+        return {
+            "status": "success",
+            "message": "EUDR file processing (notrounded) completed",
+            "file_info": {
+                "filename": file.filename,
+                "size_mb": round(file_size_mb, 2),
+                "features_count": features_count
+            },
+            "analysis_summary": {
+                "total_processed": len(result.get('results', [])),
+                "high_risk": high_risk_count,
+                "low_risk": low_risk_count,
+                "parallel_processing": result.get('parallel_processing_enabled', False),
+                "processing_time_seconds": round(processing_time, 2)
+            },
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"EUDR File Upload error (notrounded): {str(e)}")
+        if 'tmp_path' in locals():
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+        raise HTTPException(status_code=500, detail=f"Processing failed (notrounded): {str(e)}")
+
 
 @router.post("/upload-geojson", tags=["EUDR File Upload"])
 async def upload_geojson_file(file: UploadFile = File(...)):

@@ -92,6 +92,10 @@ app = FastAPI(
         {
             "url": "https://global-compliance-system.com/",
             "description": "Production server"
+        },
+        {
+            "url": "http://localhost:8000",
+            "description": "Local development server",
         }
     ]
 )

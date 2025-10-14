@@ -326,7 +326,52 @@ class MultilayerService:
                 f'{dataset_prefix}_year_compilation': None,
                 'dataset': f'{dataset_prefix.upper()} Loss Detection (2021-2024)'
             }
-    
+        
+    def _calculate_loss_stats_notrounded(self, stats: Dict[str, float], total_area_hectares: float, 
+                             dataset_prefix: str, years: List[int]) -> Dict[str, Any]:
+        """
+        Same as _calculate_loss_stats but does NOT round area/percent values.
+        """
+        try:
+            combined_band = f'{dataset_prefix}_combined'
+            combined_value = stats.get(combined_band, 0)
+            loss_area_hectares = (combined_value * 900) / 10000
+            loss_percentage = (loss_area_hectares / total_area_hectares * 100) if total_area_hectares > 0 else 0
+            if loss_area_hectares > 0:
+                risk_stat = "high"
+            else:
+                risk_stat = "low"
+            if loss_area_hectares <= 0:
+                year_compilation = None
+            else:
+                year_losses = {}
+                for year in years:
+                    year_band = f'{dataset_prefix}_{year}'
+                    year_value = stats.get(year_band, 0)
+                    year_losses[year] = year_value
+                years_with_actual_loss = [year for year, loss in year_losses.items() if loss > 0]
+                if years_with_actual_loss:
+                    max_year = max(years_with_actual_loss, key=lambda k: year_losses[k])
+                    year_compilation = max_year
+                else:
+                    year_compilation = None
+            return {
+                f'{dataset_prefix}_stat': risk_stat,
+                f'{dataset_prefix}_percent': loss_percentage,
+                f'{dataset_prefix}_area': loss_area_hectares,
+                f'{dataset_prefix}_year_compilation': year_compilation,
+                'dataset': f'{dataset_prefix.upper()} Loss Detection (2021-2024)'
+            }
+        except Exception as e:
+            logger.error(f"Error calculating stats for {dataset_prefix} (notrounded): {str(e)}")
+            return {
+                f'{dataset_prefix}_stat': "low",
+                f'{dataset_prefix}_percent': 0,
+                f'{dataset_prefix}_area': 0,
+                f'{dataset_prefix}_year_compilation': None,
+                'dataset': f'{dataset_prefix.upper()} Loss Detection (2021-2024)'
+            }
+     
     def _determine_simplified_compliance(self, gfw_analysis: Dict, jrc_analysis: Dict, 
                                        sbtn_analysis: Dict) -> Dict[str, Any]:
         """
@@ -395,7 +440,7 @@ class MultilayerService:
             }
         }
     
-    def _process_single_feature(self, feature: Dict[str, Any], ee_image) -> Dict[str, Any]:
+    def _process_single_feature(self, feature: Dict[str, Any], ee_image, notrounded: bool = False) -> Dict[str, Any]:
         """
         Process single GeoJSON feature dengan dedicated thread dan service account
         Used by parallel processing implementation
@@ -423,18 +468,26 @@ class MultilayerService:
             # Perform zonal statistics (akan menggunakan thread-specific account)
             stats = self.zonal_stats_ee(geometry, ee_image, self.band_names)
             
-            # 1. GFW Loss statistics
-            gfw_stats = self._calculate_loss_stats(stats, total_area_hectares, 'gfw_loss', [2021, 2022, 2023, 2024])
-            result['gfw_loss'] = gfw_stats
-            
-            # 2. JRC Loss statistics  
-            jrc_stats = self._calculate_loss_stats(stats, total_area_hectares, 'jrc_loss', [2021, 2022, 2023, 2024])
-            result['jrc_loss'] = jrc_stats
-            
-            # 3. SBTN Loss statistics
-            sbtn_stats = self._calculate_loss_stats(stats, total_area_hectares, 'sbtn_loss', [2021, 2022, 2023, 2024])
-            result['sbtn_loss'] = sbtn_stats
-            
+            if notrounded:
+                # 1. GFW Loss statistics (notrounded)
+                gfw_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'gfw_loss', [2021, 2022, 2023, 2024])
+                result['gfw_loss'] = gfw_stats
+                # 2. JRC Loss statistics (notrounded)
+                jrc_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'jrc_loss', [2021, 2022, 2023, 2024])
+                result['jrc_loss'] = jrc_stats
+                # 3. SBTN Loss statistics (notrounded)
+                sbtn_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'sbtn_loss', [2021, 2022, 2023, 2024])
+                result['sbtn_loss'] = sbtn_stats
+            else:
+                # 1. GFW Loss statistics (rounded)
+                gfw_stats = self._calculate_loss_stats(stats, total_area_hectares, 'gfw_loss', [2021, 2022, 2023, 2024])
+                result['gfw_loss'] = gfw_stats
+                # 2. JRC Loss statistics (rounded)
+                jrc_stats = self._calculate_loss_stats(stats, total_area_hectares, 'jrc_loss', [2021, 2022, 2023, 2024])
+                result['jrc_loss'] = jrc_stats
+                # 3. SBTN Loss statistics (rounded)
+                sbtn_stats = self._calculate_loss_stats(stats, total_area_hectares, 'sbtn_loss', [2021, 2022, 2023, 2024])
+                result['sbtn_loss'] = sbtn_stats
             # Overall compliance
             overall_compliance = self._determine_simplified_compliance(gfw_stats, jrc_stats, sbtn_stats)
             result['overall_compliance'] = overall_compliance
@@ -454,7 +507,7 @@ class MultilayerService:
                 'geometry': geometry
             }
 
-    def process_geojson(self, geojson_data: Dict[str, Any]) -> Dict[str, Any]:
+    def process_geojson(self, geojson_data: Dict[str, Any], notrounded: bool = False) -> Dict[str, Any]:
         """
         Process GeoJSON dengan parallel processing menggunakan 16 service accounts
         Implements true parallel processing with ThreadPoolExecutor and account rotation
@@ -474,14 +527,12 @@ class MultilayerService:
             if ENABLE_PARALLEL_PROCESSING and self.available_accounts and total_features > 1:
                 # PARALLEL PROCESSING dengan 16 service accounts
                 logger.info(f"Using PARALLEL processing with {len(self.available_accounts)} service accounts")
-                
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     # Submit all tasks
                     future_to_feature = {
-                        executor.submit(self._process_single_feature, feature, ee_image): feature 
+                        executor.submit(self._process_single_feature, feature, ee_image, notrounded): feature 
                         for feature in features
                     }
-                    
                     # Collect results as they complete
                     for future in as_completed(future_to_feature):
                         feature = future_to_feature[future]
@@ -496,14 +547,12 @@ class MultilayerService:
                             failed_count += 1
                             plot_id = feature.get('properties', {}).get('plot_id', 'unknown')
                             logger.error(f"Future exception for feature {plot_id}: {str(e)}")
-            
             else:
                 # SEQUENTIAL PROCESSING (fallback)
                 logger.info("Using SEQUENTIAL processing (parallel disabled or insufficient accounts)")
-                
                 for feature in features:
                     try:
-                        result = self._process_single_feature(feature, ee_image)
+                        result = self._process_single_feature(feature, ee_image, notrounded)
                         if 'error' not in result:
                             results.append(result)
                         else:
