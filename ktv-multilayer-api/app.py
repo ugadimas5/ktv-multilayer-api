@@ -87,11 +87,11 @@ app = FastAPI(
     servers=[
         {
             "url": "https://eudr-multilayer-api.fly.dev",
-            "description": "Production server"
+            "description": "Development server"
         },
         {
-            "url": "http://localhost:8000",
-            "description": "Development server"
+            "url": "https://global-compliance-system.com/",
+            "description": "Production server"
         }
     ]
 )
