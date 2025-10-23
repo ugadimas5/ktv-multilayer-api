@@ -22,6 +22,7 @@ if os.getenv("APP_ENV") != "production":
 from routers.general import router as general_router
 from routers.eudr import router as eudr_router
 from routers.geojson import router as geojson_router
+from routers.commodity_analysis import router as commodity_analysis_router
 
 # Create FastAPI application
 app = FastAPI(
@@ -123,9 +124,11 @@ async def root_health():
     }
 
 # Include routers
+
 app.include_router(general_router)
 app.include_router(eudr_router)
 app.include_router(geojson_router)
+app.include_router(commodity_analysis_router)
 
 # Legacy endpoints for backward compatibility
 from routers.legacy import router as legacy_router
