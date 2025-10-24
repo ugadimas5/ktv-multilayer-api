@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from itertools import cycle
+import psycopg2
 
 # Import auth helper if available
 try:
@@ -33,11 +34,51 @@ except ImportError:
     MAX_PARALLEL_WORKERS = 4
 
 class MultilayerService:
+    def analyze_brwa_overlap(self, geometry: dict) -> dict:
+        """
+        Analisis overlap dengan tabel brwa_idn di PostGIS.
+        Return: dict { 'brwa_status': 'overlap'/'no_overlap', 'brwa_area_overlap': float }
+        """
+        try:
+            db_params = dict(
+                host=os.getenv("postgisHost", "ep-silent-morning-afgiwp5c.c-2.us-west-2.aws.neon.tech"),
+                port=os.getenv("postgisPort", "5432"),
+                dbname=os.getenv("postgisDatabase", "neondb"),
+                user=os.getenv("postgisUsername", "neondb_owner"),
+                password=os.getenv("postgisPassword", "npg_vzlCGi4Ls8fB")
+            )
+            with psycopg2.connect(**db_params) as conn, conn.cursor() as cur:
+                sql = """
+                    SELECT 
+                        CASE WHEN COUNT(*) > 0 THEN 'overlap' ELSE 'no_overlap' END as brwa_status,
+                        COALESCE(SUM(
+                            ST_Area(
+                                ST_Intersection(
+                                    ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
+                                    geom
+                                )::geography
+                            ) / 10000.0
+                        ), 0) as brwa_area_overlap
+                    FROM brwa_idn
+                    WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), geom)
+                """
+                geom_geojson = json.dumps(geometry)
+                cur.execute(sql, (geom_geojson, geom_geojson))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "brwa_status": row[0],
+                        "brwa_area_overlap": float(row[1]) if row[1] is not None else 0.0
+                    }
+                else:
+                    return {"brwa_status": "no_overlap", "brwa_area_overlap": 0.0}
+        except Exception as e:
+            logger.error(f"BRWA overlap analysis error: {str(e)}")
+            return {"brwa_status": None, "brwa_area_overlap": None}
     """
     Professional EUDR compliance forest analysis service
     Implements comprehensive multi-satellite data processing for forest monitoring
     """
-    
     def __init__(self):
         self.datasets = {
             'glad_primary': 'GLAD Primary Humid Tropical Forests',
@@ -494,6 +535,11 @@ class MultilayerService:
             
             # Keep geometry
             result['geometry'] = geometry
+
+            # Analisis overlap BRWA
+            brwa_result = self.analyze_brwa_overlap(geometry)
+            result['brwa_status'] = brwa_result.get('brwa_status')
+            result['brwa_area_overlap'] = brwa_result.get('brwa_area_overlap')
             
             logger.debug(f"Processed feature {plot_id} successfully")
             return result

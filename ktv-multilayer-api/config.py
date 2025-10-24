@@ -29,11 +29,11 @@ EE_REQUESTS_PER_MINUTE = int(os.getenv("EE_REQUESTS_PER_MINUTE", "1000"))
 
 # Database Configuration (for batch processing)
 DATABASE_CONFIG = {
-    "host": os.getenv("postgisHost", "localhost"),
+    "host": os.getenv("postgisHost", "ep-silent-morning-afgiwp5c.c-2.us-west-2.aws.neon.tech"),
     "port": int(os.getenv("postgisPort", "5432")),
-    "database": os.getenv("postgisDatabase", "eudr_compliance"),
-    "username": os.getenv("postgisUsername", "postgres"),
-    "password": os.getenv("postgisPassword", "")
+    "database": os.getenv("postgisDatabase", "neondb"),
+    "username": os.getenv("postgisUsername", "neondb_owner"),
+    "password": os.getenv("postgisPassword", "npg_vzlCGi4Ls8fB")
 }
 
 # API Configuration

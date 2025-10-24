@@ -28,6 +28,28 @@ API untuk processing GeoJSON dengan 3 dataset (GFW, JRC, SBTN) dan generate stat
 - `GET /api/v1/gee/tiles/{dataset}` - Info tile dan template URL untuk dataset GEE
 - `POST /api/v1/gee/refresh` - Refresh cache dataset GEE
 - `GET /api/v1/gaul_level2_geojson` - Generate GeoJSON boundary dari ee.FeatureCollection("FAO/GAUL/2015/level2") (dengan filter ADM0/ADM1/ADM2)
+- `GET /api/v1/gaul_level2_csv` - Ekspor seluruh province, adm0_code, adm1_code, adm2_code Indonesia dalam format CSV
+### GAUL Level2 CSV Export Endpoint
+
+**GET /api/v1/gaul_level2_csv**
+
+- Ekspor seluruh data provinsi, kabupaten/kota, beserta kode ADM0, ADM1, ADM2 untuk Indonesia (ADM0_NAME = 'Indonesia') dalam format CSV.
+- Output: File CSV dengan kolom: ADM0_CODE, ADM0_NAME, ADM1_CODE, ADM1_NAME, ADM2_CODE, ADM2_NAME
+
+**Contoh request:**
+
+```bash
+curl -X GET 'https://ktv-multilayer-api.fly.dev/api/v1/gaul_level2_csv' -o gaul_level2_indonesia.csv
+```
+
+**Contoh output CSV:**
+```csv
+ADM0_CODE,ADM0_NAME,ADM1_CODE,ADM1_NAME,ADM2_CODE,ADM2_NAME
+102,Indonesia,2001,Jawa Barat,30012,Bandung
+102,Indonesia,2001,Jawa Barat,30013,Bandung Barat
+102,Indonesia,2002,Jawa Tengah,30021,Semarang
+... (dan seterusnya)
+```
 ### GAUL Level2 Boundary Endpoint
 
 **GET /api/v1/gaul_level2_geojson?adm0_code=&adm1_code=&adm2_code=**
