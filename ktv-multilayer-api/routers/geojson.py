@@ -10,8 +10,10 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from datetime import datetime
 from loguru import logger
-from services.data.multilayer_service import MultilayerService
+
 import ee
+import asyncio
+from services.data.multilayer_service import MultilayerService
 
 # Router instance
 router = APIRouter(
@@ -25,12 +27,15 @@ class GeoJSONRequest(BaseModel):
     geojson: Dict[str, Any]
     analysis_params: Optional[Dict[str, Any]] = {}
 
+
 @router.post("/upload-geojson-notrounded", tags=["EUDR File Upload"], summary="Upload GeoJSON and get unrounded results")
 async def upload_geojson_notrounded(file: UploadFile = File(...)):
     """
     Upload and analyze GeoJSON file for EUDR compliance, returning unrounded area/percent values.
+    Proses setiap feature secara async-parallel untuk efisiensi dan memory safety.
     """
     logger.info("EUDR File Upload (notrounded): Starting...")
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".geojson") as tmp:
             contents = await file.read()
@@ -49,42 +54,82 @@ async def upload_geojson_notrounded(file: UploadFile = File(...)):
         if "type" not in geojson_data or geojson_data["type"] not in ["FeatureCollection", "Feature"]:
             os.unlink(tmp_path)
             raise HTTPException(status_code=400, detail="Invalid GeoJSON structure")
+
+        features = geojson_data.get("features", [])
+        if not isinstance(features, list):
+            features = [geojson_data]
+        features_count = len(features)
         service = MultilayerService()
         start_time = datetime.now()
-        # Gunakan multiprocessing dan mode notrounded
-        result = service.process_geojson(geojson_data, notrounded=True)
+
+        async def process_feature_async(feature):
+            geometry = feature.get("geometry")
+            if not geometry or not geometry.get("type") or not geometry.get("coordinates"):
+                logger.warning("Invalid geometry format")
+                return None
+            try:
+                # Konversi ke ee.Geometry sesuai tipe
+                if geometry["type"] == "Polygon":
+                    ee_geometry = ee.Geometry.Polygon(geometry["coordinates"])
+                elif geometry["type"] == "MultiPolygon":
+                    ee_geometry = ee.Geometry.MultiPolygon(geometry["coordinates"])
+                else:
+                    logger.warning(f"Unsupported geometry type: {geometry['type']}")
+                    return None
+                # Proses statistik (sync, bisa di-offload ke thread jika perlu)
+                # Gunakan executor agar tidak blocking event loop
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, service._process_single_feature, feature, service.get_ee_datasets(), True)
+                return {
+                    "type": "Feature",
+                    "properties": {k: v for k, v in result.items() if k != 'geometry'},
+                    "geometry": geometry
+                }
+            except Exception as e:
+                logger.error(f"Error processing feature: {str(e)}")
+                return None
+
+        # Proses semua feature secara paralel
+        processed_features = await asyncio.gather(*(process_feature_async(f) for f in features))
+        processed_features = [f for f in processed_features if f]
+
         processing_time = (datetime.now() - start_time).total_seconds()
         os.unlink(tmp_path)
-        features_count = len(geojson_data.get("features", [geojson_data]))
-        high_risk_count = sum(1 for r in result.get('results', []) if r.get('risk_level') == 'High')
+
+        # Hitung ringkasan risiko jika ada risk_level di properties
+        high_risk_count = sum(1 for f in processed_features if f and f["properties"].get('risk_level') == 'High')
         low_risk_count = features_count - high_risk_count
-        logger.success("EUDR File Upload (notrounded): Processing completed successfully")
+
+        logger.success("EUDR File Upload (notrounded): Async processing completed successfully")
         return {
             "status": "success",
-            "message": "EUDR file processing (notrounded) completed",
+            "message": "EUDR file processing (notrounded) completed (async)",
             "file_info": {
                 "filename": file.filename,
                 "size_mb": round(file_size_mb, 2),
                 "features_count": features_count
             },
             "analysis_summary": {
-                "total_processed": len(result.get('results', [])),
+                "total_processed": len(processed_features),
                 "high_risk": high_risk_count,
                 "low_risk": low_risk_count,
-                "parallel_processing": result.get('parallel_processing_enabled', False),
+                "parallel_processing": True,
                 "processing_time_seconds": round(processing_time, 2)
             },
-            "data": result
+            "data": {
+                "type": "FeatureCollection",
+                "features": processed_features
+            }
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"EUDR File Upload error (notrounded): {str(e)}")
-        if 'tmp_path' in locals():
+        if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
-            except:
-                pass
+            except Exception as cleanup_err:
+                logger.error(f"Failed to remove temp file {tmp_path}: {cleanup_err}")
         raise HTTPException(status_code=500, detail=f"Processing failed (notrounded): {str(e)}")
 
 
