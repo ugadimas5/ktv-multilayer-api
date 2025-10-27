@@ -66,41 +66,64 @@ class GEEDatasetService:
             raise HTTPException(status_code=500, detail=f"EE initialization failed: {str(e)}")
     
     def _get_ee_datasets(self) -> ee.Image:
-        """Load simplified Earth Engine datasets focusing on 6 key datasets"""
+        """Load EUDR compliance datasets with GFW/SBTN Loss 2021-2025 (GFC+GLAD)"""
         try:
-            logger.info("Loading Earth Engine datasets...")
-            
+            logger.info("Loading Earth Engine datasets (2021-2025 GFW/SBTN Loss)...")
+
             # 1. GFW (Global Forest Watch) - Forest Cover
             gfc = ee.Image("UMD/hansen/global_forest_change_2024_v1_12")
             gfw_forest = gfc.select("treecover2000").gt(10).rename("gfw")
-            
+
             # 2. GFW Loss (2021-2024) - Forest Loss
             loss_2021_2024 = gfc.select("lossyear").gte(21).And(gfc.select("lossyear").lte(24))
-            gfw_loss = loss_2021_2024.selfMask().rename("gfw_loss")
-            
-            # 3. JRC (Joint Research Centre) - Forest Cover 2020
-            eufo = ee.ImageCollection("JRC/GFC2020/V2").mosaic().rename("jrc").selfMask()
-            
-            # 4. JRC Loss (2021-2024) - JRC TMF Deforestation
-            jrc_loss = self._get_jrc_tmf_deforestation().rename("jrc_loss")
-            
-            # 5. SBTN (Science Based Targets Network) - Natural Lands
+
+            # 3. SBTN (Science Based Targets Network) - Natural Lands
             sbtn = ee.Image('WRI/SBTN/naturalLands/v1_1/2020').select('natural').rename('sbtn').selfMask()
-            
-            # 6. SBTN Loss (2021-2024) - Deforestation in SBTN areas
             sbtn_mask = sbtn.eq(1)
-            sbtn_loss = loss_2021_2024.updateMask(sbtn_mask).selfMask().rename("sbtn_loss")
-            
+
+            # 4. GFW Primary Forest 2020 (mask)
+            primary_mask_2020 = gfw_forest.unmask(0)
+
+            # 5. GLAD Alerts 2025
+            glad_col = ee.ImageCollection('projects/glad/alert/UpdResult').map(
+                lambda img: img.select(['conf25', 'alertDate25', 'obsCount', 'obsDate'])
+            )
+            glad_latest = glad_col.mosaic()
+            conf25 = glad_latest.select('conf25')
+            alertDate25 = glad_latest.select('alertDate25')
+            glad_2025_alerts = conf25.gt(0).And(alertDate25.gt(0))
+
+            # 6. SBTN Loss 2021-2024 (GFC loss in SBTN areas)
+            sbtn_loss_2021_2024 = loss_2021_2024.And(sbtn_mask).unmask(0)
+            # 7. GFW Loss 2021-2024 (GFC loss in primary forest areas)
+            gfw_loss_2021_2024 = loss_2021_2024.And(primary_mask_2020).unmask(0)
+
+            # 8. SBTN GLAD 2025 (mask SBTN & alert 2025)
+            sbtn_glad_2025 = glad_2025_alerts.And(sbtn_mask).unmask(0)
+            # 9. GFW GLAD 2025 (mask primary & alert 2025)
+            gfw_glad_2025 = glad_2025_alerts.And(primary_mask_2020).unmask(0)
+
+            # 10. SBTN Loss 2021-2025: Gabungan SBTN loss (2021-2024) + SBTN GLAD 2025
+            sbtn_loss = sbtn_loss_2021_2024.Or(sbtn_glad_2025).rename('sbtn_loss')
+            # 11. GFW Loss 2021-2025: Gabungan GFW loss (2021-2024) + GFW GLAD 2025
+            gfw_loss = gfw_loss_2021_2024.Or(gfw_glad_2025).rename('gfw_loss')
+
+            # 12. JRC (Joint Research Centre) - Forest Cover 2020
+            eufo = ee.ImageCollection("JRC/GFC2020/V2").mosaic().rename("jrc").selfMask()
+
+            # 13. JRC Loss (2021-2024) - JRC TMF Deforestation
+            jrc_loss = self._get_jrc_tmf_deforestation().rename("jrc_loss")
+
             # Combine all 6 datasets
             combined_image = gfw_forest.addBands(gfw_loss) \
                                       .addBands(eufo) \
                                       .addBands(jrc_loss) \
                                       .addBands(sbtn) \
                                       .addBands(sbtn_loss)
-            
-            logger.info("Earth Engine datasets loaded successfully")
+
+            logger.info("Earth Engine datasets (2021-2025 GFW/SBTN Loss) loaded successfully")
             return combined_image
-            
+
         except Exception as e:
             logger.error(f"Error loading datasets: {e}")
             raise HTTPException(status_code=500, detail=f"Error loading datasets: {str(e)}")
