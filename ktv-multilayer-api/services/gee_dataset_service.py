@@ -16,6 +16,45 @@ from loguru import logger
 load_dotenv()
 
 class GEEDatasetService:
+    def _get_indonesia_mask(self):
+        """Ambil geometry Indonesia dari GAUL level2 (ADM0_CODE=116) dan buat mask ee.Geometry"""
+        try:
+            # GAUL level2 asset
+            gaul_fc = ee.FeatureCollection('FAO/GAUL/2015/level2')
+            indonesia_fc = gaul_fc.filter(ee.Filter.eq('ADM0_CODE', 116))
+            indonesia_geom = indonesia_fc.geometry()
+            return indonesia_geom
+        except Exception as e:
+            logger.error(f"Error getting Indonesia mask: {e}")
+            return None
+    def get_tile_indonesia(self, dataset: str, z: int, x: int, y: int, style: str = "default") -> RedirectResponse:
+        """Get map tile for specific dataset, masked to Indonesia only (ADM0_CODE=116)"""
+        if not self.is_initialized or self.ee_image is None:
+            logger.info("Initializing Earth Engine for tile service...")
+            self.authenticate_ee(single_account=True)
+
+        available_datasets = self.get_available_datasets()["datasets"]
+        if dataset not in available_datasets:
+            raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found")
+        band_name = available_datasets[dataset]["band"]
+        vis_params = self._get_visualization_params(dataset, style)
+
+        try:
+            logger.info(f"Generating Indonesia-masked tile for {dataset} at {z}/{x}/{y}")
+            image_band = self.ee_image.select(band_name)
+            # Masking Indonesia
+            indonesia_geom = self._get_indonesia_mask()
+            if indonesia_geom:
+                image_band = image_band.updateMask(image_band.gt(0)).clip(indonesia_geom)
+            else:
+                logger.warning("Indonesia geometry not found, returning global tile")
+            map_id = image_band.getMapId(vis_params)
+            tile_url = map_id['tile_fetcher'].url_format.format(z=z, x=x, y=y)
+            logger.info(f"Redirecting to: {tile_url}")
+            return RedirectResponse(url=tile_url)
+        except Exception as e:
+            logger.error(f"Error generating Indonesia tile: {e}")
+            raise HTTPException(status_code=500, detail=f"Error generating Indonesia tile: {str(e)}")
     def __init__(self):
         self.ee_image = None
         self.is_initialized = False

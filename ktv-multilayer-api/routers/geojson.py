@@ -1,3 +1,7 @@
+# Route khusus tile Indonesia (masking ADM0_CODE=116)
+from services.gee_dataset_service import gee_dataset_service
+
+
 """
 GeoJSON File Upload Router
 Handles file upload and GeoJSON processing endpoints
@@ -414,6 +418,19 @@ def _get_gee_service():
             status_code=503, 
             detail="GEE Tile Service not available. Please install Earth Engine dependencies."
         )
+
+@router.get("/gee/tiles/indonesia/{dataset}/{z}/{x}/{y}", tags=["GEE Tile Services"])
+async def get_gee_tile_indonesia(
+    dataset: str,
+    z: int,
+    x: int,
+    y: int,
+    style: Optional[str] = Query("default", description="Visualization style (default, red, orange, light_green, dark_green, blue, purple)")
+):
+    """
+    Get map tile for specific Google Earth Engine dataset, masked to Indonesia only (ADM0_CODE=116).
+    """
+    return gee_dataset_service.get_tile_indonesia(dataset, z, x, y, style)
 
 @router.get("/gee/datasets", tags=["GEE Tile Services"])
 async def get_gee_datasets():

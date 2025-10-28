@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Visualisasi Tile Indonesia GEE</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    #map { height: 600px; width: 100%; }
+  </style>
+</head>
+<body>
+  <h2>Visualisasi Tile Indonesia GEE</h2>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // Inisialisasi peta
+    var map = L.map('map').setView([-2, 118], 5); // Center Indonesia
+
+    // Tambahkan tile Indonesia dari API Anda
+    var geeTile = L.tileLayer(
+      'http://localhost:8000/api/v1/gee/tiles/indonesia/gfw_loss/{z}/{x}/{y}?style=default',
+      {
+        attribution: 'GEE Indonesia Tile',
+        maxZoom: 12,
+        tileSize: 256
+      }
+    ).addTo(map);
+
+    // Bisa ganti 'gfw_loss' ke 'sbtn_loss', 'jrc_loss', dll sesuai dataset
+  </script>
+</body>
+</html>
