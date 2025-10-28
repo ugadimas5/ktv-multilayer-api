@@ -16,6 +16,12 @@ from loguru import logger
 load_dotenv()
 
 class GEEDatasetService:
+    def __init__(self):
+        self.ee_image = None
+        self.is_initialized = False
+        self.map_id_cache = {}
+        self.indonesia_map_id_cache = {}
+        
     def _get_indonesia_mask(self):
         """Ambil geometry Indonesia dari GAUL level2 (ADM0_CODE=116) dan buat mask ee.Geometry"""
         try:
@@ -27,6 +33,76 @@ class GEEDatasetService:
         except Exception as e:
             logger.error(f"Error getting Indonesia mask: {e}")
             return None
+    
+    def _generate_map_id_cache_key(self, dataset: str, style: str) -> str:
+        """Generate cache key for Map ID"""
+        return f"{dataset}_{style}"
+    
+    def _get_or_create_map_id(self, dataset: str, style: str, image_band: ee.Image, vis_params: Dict[str, Any]) -> str:
+        """Get cached Map ID or create new one"""
+        cache_key = self._generate_map_id_cache_key(dataset, style)
+        
+        if cache_key in self.map_id_cache:
+            logger.info(f"Using cached Map ID for {cache_key}")
+            return self.map_id_cache[cache_key]
+        
+        logger.info(f"Generating new Map ID for {cache_key}")
+        map_id = image_band.getMapId(vis_params)
+        url_format = map_id['tile_fetcher'].url_format
+        
+        self.map_id_cache[cache_key] = url_format
+        return url_format
+    
+    def _get_or_create_indonesia_map_id(self, dataset: str, style: str, image_band: ee.Image, vis_params: Dict[str, Any]) -> str:
+        """Get cached Indonesia Map ID or create new one"""
+        cache_key = self._generate_map_id_cache_key(dataset, style)
+        
+        if cache_key in self.indonesia_map_id_cache:
+            logger.info(f"Using cached Indonesia Map ID for {cache_key}")
+            return self.indonesia_map_id_cache[cache_key]
+        
+        logger.info(f"Generating new Indonesia Map ID for {cache_key}")
+        map_id = image_band.getMapId(vis_params)
+        url_format = map_id['tile_fetcher'].url_format
+        
+        self.indonesia_map_id_cache[cache_key] = url_format
+        return url_format
+    
+    def pregenerate_map_ids(self):
+        """Pre-generate Map IDs for all common datasets and styles for faster tile serving"""
+        if not self.is_initialized or self.ee_image is None:
+            logger.warning("Cannot pre-generate Map IDs: Earth Engine not initialized")
+            return
+        
+        logger.info("Pre-generating Map IDs for common datasets...")
+        
+        datasets = ["gfw", "gfw_loss", "jrc", "jrc_loss", "sbtn", "sbtn_loss"]
+        styles = ["default"]
+        
+        for dataset in datasets:
+            for style in styles:
+                try:
+                    cache_key = self._generate_map_id_cache_key(dataset, style)
+                    
+                    if cache_key not in self.map_id_cache:
+                        band_name = self.get_available_datasets()["datasets"][dataset]["band"]
+                        vis_params = self._get_visualization_params(dataset, style)
+                        
+                        image_band = self.ee_image.select(band_name)
+                        
+                        if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss"]:
+                            image_band = image_band.updateMask(image_band.gt(0))
+                        
+                        map_id = image_band.getMapId(vis_params)
+                        self.map_id_cache[cache_key] = map_id['tile_fetcher'].url_format
+                        
+                        logger.info(f"Pre-generated Map ID for {cache_key}")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to pre-generate Map ID for {dataset}/{style}: {e}")
+        
+        logger.info(f"Map ID cache ready with {len(self.map_id_cache)} entries")
+    
     def get_tile_indonesia(self, dataset: str, z: int, x: int, y: int, style: str = "default") -> RedirectResponse:
         """Get map tile for specific dataset, masked to Indonesia only (ADM0_CODE=116)"""
         if not self.is_initialized or self.ee_image is None:
@@ -40,24 +116,21 @@ class GEEDatasetService:
         vis_params = self._get_visualization_params(dataset, style)
 
         try:
-            logger.info(f"Generating Indonesia-masked tile for {dataset} at {z}/{x}/{y}")
             image_band = self.ee_image.select(band_name)
-            # Masking Indonesia
+            
             indonesia_geom = self._get_indonesia_mask()
             if indonesia_geom:
                 image_band = image_band.updateMask(image_band.gt(0)).clip(indonesia_geom)
             else:
                 logger.warning("Indonesia geometry not found, returning global tile")
-            map_id = image_band.getMapId(vis_params)
-            tile_url = map_id['tile_fetcher'].url_format.format(z=z, x=x, y=y)
-            logger.info(f"Redirecting to: {tile_url}")
+            
+            url_format = self._get_or_create_indonesia_map_id(dataset, style, image_band, vis_params)
+            tile_url = url_format.format(z=z, x=x, y=y)
+            
             return RedirectResponse(url=tile_url)
         except Exception as e:
             logger.error(f"Error generating Indonesia tile: {e}")
             raise HTTPException(status_code=500, detail=f"Error generating Indonesia tile: {str(e)}")
-    def __init__(self):
-        self.ee_image = None
-        self.is_initialized = False
         
     def authenticate_ee(self, single_account: bool = False) -> None:
         """
@@ -76,7 +149,7 @@ class GEEDatasetService:
 
             # Convert to absolute path if needed
             if not os.path.isabs(service_account_path):
-                project_root = Path(__file__).parent.parent.parent
+                project_root = Path(__file__).parent.parent
                 service_account_path = project_root / service_account_path
             else:
                 service_account_path = Path(service_account_path)
@@ -99,6 +172,9 @@ class GEEDatasetService:
             self.is_initialized = True
 
             logger.info("Earth Engine initialized successfully for tile serving")
+            
+            # Pre-generate Map IDs for faster tile serving
+            self.pregenerate_map_ids()
 
         except Exception as e:
             logger.error(f"Failed to initialize Earth Engine: {e}")
@@ -261,39 +337,28 @@ class GEEDatasetService:
         }
     
     def get_tile(self, dataset: str, z: int, x: int, y: int, style: str = "default") -> RedirectResponse:
-        """Get map tile for specific dataset"""
+        """Get map tile for specific dataset with caching for improved performance"""
         if not self.is_initialized or self.ee_image is None:
             logger.info("Initializing Earth Engine for tile service...")
             self.authenticate_ee(single_account=True)
         
-        # Get available datasets
         available_datasets = self.get_available_datasets()["datasets"]
         
         if dataset not in available_datasets:
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found")
         
         band_name = available_datasets[dataset]["band"]
-        
-        # Visualization parameters
         vis_params = self._get_visualization_params(dataset, style)
         
         try:
-            logger.info(f"Generating tile for {dataset} at {z}/{x}/{y}")
-            
-            # Select band and create map tiles
             image_band = self.ee_image.select(band_name)
             
-            # Apply masking for datasets that need it
             if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss"]:
                 image_band = image_band.updateMask(image_band.gt(0))
             
-            # Get tile URL from Earth Engine
-            map_id = image_band.getMapId(vis_params)
-            tile_url = map_id['tile_fetcher'].url_format.format(z=z, x=x, y=y)
+            url_format = self._get_or_create_map_id(dataset, style, image_band, vis_params)
+            tile_url = url_format.format(z=z, x=x, y=y)
             
-            logger.info(f"Redirecting to: {tile_url}")
-            
-            # Redirect to Earth Engine tile
             return RedirectResponse(url=tile_url)
             
         except Exception as e:
