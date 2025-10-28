@@ -8,37 +8,45 @@ import os
 
 def get_ktv_datasets():
     """Load hanya 3 dataset untuk KTV: GFW loss, JRC loss, SBTN loss"""
+    # 1. Primary forest data (GLAD Primary Humid Tropical Forests)
+    primary_2001_raw = ee.ImageCollection("UMD/GLAD/PRIMARY_HUMID_TROPICAL_FORESTS/v1") \
+        .select("Primary_HT_forests").mosaic()
+    
     # Global Forest Change data
     gfc = ee.Image("UMD/hansen/global_forest_change_2024_v1_12")
+    loss_2001_2020 = gfc.select("lossyear").gte(1).And(gfc.select("lossyear").lte(20))
     
-    # 1. GFW Loss (2021-2024)
+    # Primary forest 2020 (after loss 2001-2020)
+    primary_2020 = primary_2001_raw.where(loss_2001_2020, 0).unmask(0)
+    primary_mask_2020 = primary_2020
+    
+    # 2. GFW Loss (2021-2024) - Forest loss in primary forests
     gfw_loss_bands = []
     for year in range(2021, 2025):
         year_code = year - 2000
-        loss_year = gfc.select("lossyear").eq(year_code).And(gfc.select("treecover2000").gt(10))
-        gfw_loss_year = loss_year.rename(f'gfw_loss_{year}')
+        loss_year = gfc.select("lossyear").eq(year_code)
+        gfw_loss_year = loss_year.multiply(primary_mask_2020).rename(f'gfw_loss_{year}')
         gfw_loss_bands.append(gfw_loss_year)
     
     # GFW combined loss 2021-2024
     gfw_combined = gfc.select("lossyear").gte(21).And(gfc.select("lossyear").lte(24))
-    gfw_combined = gfw_combined.And(gfc.select("treecover2000").gt(10)).rename('gfw_loss_combined')
+    gfw_combined = gfw_combined.multiply(primary_mask_2020).rename('gfw_loss_combined')
     
-    # 2. SBTN Loss 
+    # 3. SBTN Loss 
     sbtn = ee.Image('WRI/SBTN/naturalLands/v1_1/2020').select('natural')
     sbtn_mask = sbtn.eq(1)
     sbtn_loss_bands = []
     for year in range(2021, 2025):
         year_code = year - 2000
-        loss_year = gfc.select("lossyear").eq(year_code).And(gfc.select("treecover2000").gt(10))
-        sbtn_loss_year = loss_year.updateMask(sbtn_mask).rename(f'sbtn_loss_{year}')
+        loss_year = gfc.select("lossyear").eq(year_code)
+        sbtn_loss_year = loss_year.multiply(sbtn_mask).rename(f'sbtn_loss_{year}')
         sbtn_loss_bands.append(sbtn_loss_year)
     
     # SBTN combined loss
     sbtn_combined = gfc.select("lossyear").gte(21).And(gfc.select("lossyear").lte(24))
-    sbtn_combined = sbtn_combined.And(gfc.select("treecover2000").gt(10))
-    sbtn_combined = sbtn_combined.updateMask(sbtn_mask).rename('sbtn_loss_combined')
+    sbtn_combined = sbtn_combined.multiply(sbtn_mask).rename('sbtn_loss_combined')
     
-    # 3. JRC Loss
+    # 4. JRC Loss
     eufo = ee.ImageCollection("JRC/GFC2020/V2").mosaic()
     eufo_mask = eufo.gt(0)
     tmf_def = ee.ImageCollection("projects/JRC/TMF/v1_2024/DeforestationYear").mosaic()
