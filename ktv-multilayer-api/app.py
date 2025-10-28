@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 if os.getenv("APP_ENV") != "production":
     load_dotenv()
 
-
 # Import routers
 from routers.general import router as general_router
 from routers.eudr import router as eudr_router
@@ -29,10 +28,9 @@ from routers.gaul import router as gaul_router
 from routers.gaul_csv import router as gaul_csv_router
 
 # Create FastAPI application
-app = FastAPI(
-    title="Simplified EUDR Forest Compliance API",
-    version="2.1.0",
-    description="""
+app = FastAPI(title="Simplified EUDR Forest Compliance API",
+              version="2.1.0",
+              description="""
     Simplified EUDR compliance monitoring using 3 core satellite datasets with binary risk classification.
     
     **🌟 NEW FEATURES:**
@@ -81,29 +79,24 @@ app = FastAPI(
     - Regulatory due diligence
     - Bulk analysis of farm plots
     """,
-    contact={
-        "name": "Simplified EUDR API Support",
-        "email": "support@forestapi.com"
-    },
-    license_info={
-        "name": "Commercial License",
-        "url": "https://forestapi.com/license"
-    },
-    servers=[
-        {
-            "url": "https://eudr-multilayer-api.fly.dev",
-            "description": "Development server"
-        },
-        {
-            "url": "https://global-compliance-system.com/",
-            "description": "Production server"
-        },
-        {
-            "url": "http://localhost:8000",
-            "description": "Local development server",
-        }
-    ]
-)
+              contact={
+                  "name": "Simplified EUDR API Support",
+                  "email": "support@forestapi.com"
+              },
+              license_info={
+                  "name": "Commercial License",
+                  "url": "https://forestapi.com/license"
+              },
+              servers=[{
+                  "url": "https://eudr-multilayer-api.fly.dev",
+                  "description": "Development server"
+              }, {
+                  "url": "https://global-compliance-system.com/",
+                  "description": "Production server"
+              }, {
+                  "url": "http://localhost:8000",
+                  "description": "Local development server",
+              }])
 
 # CORS middleware
 app.add_middleware(
@@ -113,6 +106,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Root health endpoint for fly.io health checks
 @app.get("/health")
@@ -127,8 +121,8 @@ async def root_health():
         "environment": "production"
     }
 
-# Include routers
 
+# Include routers
 
 app.include_router(general_router)
 app.include_router(eudr_router)
@@ -139,21 +133,22 @@ app.include_router(gaul_csv_router)
 
 # Legacy endpoints for backward compatibility
 from routers.legacy import router as legacy_router
+
 app.include_router(legacy_router)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    host = "0.0.0.0" if os.getenv("APP_ENV") == "production" else "127.0.0.1"
-    
+    port = int(os.getenv("PORT", 5000))
+    host = "0.0.0.0"
+
     print("🌍 Starting EUDR Forest Compliance API...")
     print(f"📡 Server: {host}:{port}")
     print(f"📚 Documentation: http://{host}:{port}/docs")
-    print(f"🔧 Environment: {'Production' if os.getenv('APP_ENV') == 'production' else 'Development'}")
-    print("✨ Features: File Upload + Parallel Processing")
-    
-    uvicorn.run(
-        "app:app",
-        host=host,
-        port=port,
-        reload=False if os.getenv("APP_ENV") == "production" else True
+    print(
+        f"🔧 Environment: {'Production' if os.getenv('APP_ENV') == 'production' else 'Development'}"
     )
+    print("✨ Features: File Upload + Parallel Processing")
+
+    uvicorn.run("app:app",
+                host=host,
+                port=port,
+                reload=False if os.getenv("APP_ENV") == "production" else True)

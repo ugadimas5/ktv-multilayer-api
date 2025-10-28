@@ -109,21 +109,29 @@ class GEEDatasetService:
         try:
             logger.info("Loading Earth Engine datasets (2021-2025 GFW/SBTN Loss)...")
 
-            # 1. GFW (Global Forest Watch) - Forest Cover
-            gfc = ee.Image("UMD/hansen/global_forest_change_2024_v1_12")
-            gfw_forest = gfc.select("treecover2000").gt(10).rename("gfw")
+            # 1. Primary forest data (GLAD Primary Humid Tropical Forests)
+            primary_2001_raw = ee.ImageCollection("UMD/GLAD/PRIMARY_HUMID_TROPICAL_FORESTS/v1") \
+                .select("Primary_HT_forests").mosaic()
 
-            # 2. GFW Loss (2021-2024) - Forest Loss
+            # 2. Global Forest Change data
+            gfc = ee.Image("UMD/hansen/global_forest_change_2024_v1_12")
+            loss_2001_2020 = gfc.select("lossyear").gte(1).And(gfc.select("lossyear").lte(20))
+
+            # Primary forest 2020 (after loss 2001-2020)
+            primary_2020 = primary_2001_raw.where(loss_2001_2020, 0).unmask(0)
+            gfw_forest = primary_2020.rename("gfw")
+
+            # 3. GFW Loss (2021-2024) - Forest Loss
             loss_2021_2024 = gfc.select("lossyear").gte(21).And(gfc.select("lossyear").lte(24))
 
-            # 3. SBTN (Science Based Targets Network) - Natural Lands
+            # 4. SBTN (Science Based Targets Network) - Natural Lands
             sbtn = ee.Image('WRI/SBTN/naturalLands/v1_1/2020').select('natural').rename('sbtn').selfMask()
             sbtn_mask = sbtn.eq(1)
 
-            # 4. GFW Primary Forest 2020 (mask)
-            primary_mask_2020 = gfw_forest.unmask(0)
+            # 5. GFW Primary Forest 2020 (mask)
+            primary_mask_2020 = primary_2020.unmask(0)
 
-            # 5. GLAD Alerts 2025
+            # 6. GLAD Alerts 2025
             glad_col = ee.ImageCollection('projects/glad/alert/UpdResult').map(
                 lambda img: img.select(['conf25', 'alertDate25', 'obsCount', 'obsDate'])
             )
@@ -132,19 +140,19 @@ class GEEDatasetService:
             alertDate25 = glad_latest.select('alertDate25')
             glad_2025_alerts = conf25.gt(0).And(alertDate25.gt(0))
 
-            # 6. SBTN Loss 2021-2024 (GFC loss in SBTN areas)
-            sbtn_loss_2021_2024 = loss_2021_2024.And(sbtn_mask).unmask(0)
-            # 7. GFW Loss 2021-2024 (GFC loss in primary forest areas)
-            gfw_loss_2021_2024 = loss_2021_2024.And(primary_mask_2020).unmask(0)
+            # 7. SBTN Loss 2021-2024 (GFC loss in SBTN areas)
+            sbtn_loss_2021_2024 = loss_2021_2024.multiply(sbtn_mask).unmask(0)
+            # 8. GFW Loss 2021-2024 (GFC loss in primary forest areas)
+            gfw_loss_2021_2024 = loss_2021_2024.multiply(primary_mask_2020).unmask(0)
 
-            # 8. SBTN GLAD 2025 (mask SBTN & alert 2025)
-            sbtn_glad_2025 = glad_2025_alerts.And(sbtn_mask).unmask(0)
-            # 9. GFW GLAD 2025 (mask primary & alert 2025)
-            gfw_glad_2025 = glad_2025_alerts.And(primary_mask_2020).unmask(0)
+            # 9. SBTN GLAD 2025 (mask SBTN & alert 2025)
+            sbtn_glad_2025 = glad_2025_alerts.multiply(sbtn_mask).unmask(0)
+            # 10. GFW GLAD 2025 (mask primary & alert 2025)
+            gfw_glad_2025 = glad_2025_alerts.multiply(primary_mask_2020).unmask(0)
 
-            # 10. SBTN Loss 2021-2025: Gabungan SBTN loss (2021-2024) + SBTN GLAD 2025
+            # 11. SBTN Loss 2021-2025: Gabungan SBTN loss (2021-2024) + SBTN GLAD 2025
             sbtn_loss = sbtn_loss_2021_2024.Or(sbtn_glad_2025).rename('sbtn_loss')
-            # 11. GFW Loss 2021-2025: Gabungan GFW loss (2021-2024) + GFW GLAD 2025
+            # 12. GFW Loss 2021-2025: Gabungan GFW loss (2021-2024) + GFW GLAD 2025
             gfw_loss = gfw_loss_2021_2024.Or(gfw_glad_2025).rename('gfw_loss')
 
             # 12. JRC (Joint Research Centre) - Forest Cover 2020
