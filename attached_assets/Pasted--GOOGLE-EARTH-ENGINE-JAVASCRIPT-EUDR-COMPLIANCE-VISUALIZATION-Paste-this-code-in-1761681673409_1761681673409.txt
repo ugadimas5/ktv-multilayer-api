@@ -1,0 +1,388 @@
+// ===== GOOGLE EARTH ENGINE JAVASCRIPT - EUDR COMPLIANCE VISUALIZATION =====
+// Paste this code into GEE Code Editor to visualize the layers
+
+Map.setOptions('HYBRID');
+
+// ===== DATASETS INITIALIZATION =====
+
+// 1. Primary forest data
+var primary_2001_raw = ee.ImageCollection("UMD/GLAD/PRIMARY_HUMID_TROPICAL_FORESTS/v1")
+  .select("Primary_HT_forests").mosaic();
+
+// 2. Global Forest Change data
+var gfc = ee.Image("UMD/hansen/global_forest_change_2024_v1_12");
+var loss_2001_2020 = gfc.select("lossyear").gte(1).and(gfc.select("lossyear").lte(20));
+
+// Primary forest 2020 (after loss 2001-2020)
+var primary_2020 = primary_2001_raw.where(loss_2001_2020, 0).unmask(0).rename("primary_ht_forests_2020");
+
+// 3. SBTN Natural Lands
+var sbtn = ee.Image('WRI/SBTN/naturalLands/v1_1/2020').select('natural').rename('SBTN');
+var sbtn_mask = sbtn.eq(1);
+
+// 4. EUFO (European Forest) 
+var eufo = ee.ImageCollection("JRC/GFC2020/V2").mosaic().rename("EUFO_2020");
+var eufo_mask = eufo.gt(0);
+
+// 5. JRC TMF DeforestationYear 
+var tmf_def = ee.ImageCollection("projects/JRC/TMF/v1_2024/DeforestationYear").mosaic();
+var deforestation_2021_2024 = tmf_def.gte(2021).and(tmf_def.lte(2024));
+var jrc_total_deforestation = deforestation_2021_2024.updateMask(eufo_mask).rename('jrc_deforestation');
+
+// 6. GLAD Alerts 2025 
+var glad_col = ee.ImageCollection('projects/glad/alert/UpdResult').map(
+  function(img) {
+    return img.select(['conf25', 'alertDate25', 'obsCount', 'obsDate']);
+  }
+);
+
+// Gabungkan menjadi satu citra mosaik
+var glad_latest = glad_col.mosaic();
+
+// Extract bands untuk GLAD 2025
+var conf25 = glad_latest.select('conf25');
+var alertDate25 = glad_latest.select('alertDate25');
+
+// GLAD 2025 mask: ada alert jika conf25 > 0 dan alertDate25 > 0
+var glad_2025_alerts = conf25.gt(0).and(alertDate25.gt(0));
+
+// ===== LOSS DATA 2021-2024 =====
+
+// GFC Loss 2021-2024 (forest loss)
+var loss_2021_2024 = gfc.select("lossyear").gte(21).and(gfc.select("lossyear").lte(24));
+
+// SBTN Loss: GFC loss in SBTN areas (2021-2024)
+var sbtn_loss = loss_2021_2024.multiply(sbtn_mask).unmask(0).rename('sbtn_loss');
+
+// GFW Loss: GFC loss in primary forest areas (2021-2024)
+var primary_mask_2020 = primary_2020.unmask(0);
+var gfw_loss = loss_2021_2024.multiply(primary_mask_2020).unmask(0).rename('gfw_loss');
+
+// ===== GLAD 2025 ALERTS =====
+
+// sbtn_glad_2025: SBTN mask with GLAD 2025 alerts
+var sbtn_glad_2025 = glad_2025_alerts.multiply(sbtn_mask).unmask(0).rename('sbtn_glad_2025');
+
+// gfw_glad_2025: primary_2020 with GLAD 2025 alerts  
+var gfw_glad_2025 = glad_2025_alerts.multiply(primary_mask_2020).unmask(0).rename('gfw_glad_2025');
+
+// ===== COMBINED LAYERS 2021-2025 =====
+
+// SBTN Loss 2021-2025: Gabungan SBTN loss (2021-2024) + SBTN GLAD 2025
+var sbtn_loss_2021_2025 = sbtn_loss.or(sbtn_glad_2025).rename('sbtn_loss_2021_2025');
+
+// GFW Loss 2021-2025: Gabungan GFW loss (2021-2024) + GFW GLAD 2025  
+var gfw_loss_2021_2025 = gfw_loss.or(gfw_glad_2025).rename('gfw_loss_2021_2025');
+
+// ===== VISUALIZATION PARAMETERS =====
+
+// FOREST LAYERS - HIJAU
+var sbtnForestVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#228B22']  // Forest Green
+};
+
+var gfwForestVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#006400']  // Dark Green
+};
+
+var jrcForestVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#32CD32']  // Lime Green
+};
+
+// LOSS LAYERS - MERAH
+var sbtnLossVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#FF4500']  // Red Orange
+};
+
+var gfwLossVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#DC143C']  // Crimson
+};
+
+var jrcLossVis = {
+  min: 1, 
+  max: 1, 
+  palette: ['#8B0000']  // Dark Red
+};
+
+// ===== ADD LAYERS TO MAP (ONLY 6 LAYERS) =====
+
+// Forest layers (Base layers) - HIJAU
+Map.addLayer(sbtn_mask.updateMask(sbtn_mask), sbtnForestVis, '1. SBTN Forest 2020', true);
+Map.addLayer(primary_2020.updateMask(primary_2020.gt(0)), gfwForestVis, '2. GFW Forest 2020', true);
+Map.addLayer(eufo_mask.updateMask(eufo_mask), jrcForestVis, '3. JRC Forest 2020', true);
+
+// Loss layers (Main focus) - MERAH
+Map.addLayer(sbtn_loss_2021_2025.updateMask(sbtn_loss_2021_2025.gt(0)), sbtnLossVis, '4. SBTN Loss (2021-2025)', true);
+Map.addLayer(gfw_loss_2021_2025.updateMask(gfw_loss_2021_2025.gt(0)), gfwLossVis, '5. GFW Loss (2021-2025)', true);
+Map.addLayer(jrc_total_deforestation.updateMask(jrc_total_deforestation.gt(0)), jrcLossVis, '6. JRC Loss (2021-2024)', true);
+
+// ===== CREATE LEGEND =====
+
+// Create legend panel
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px',
+    backgroundColor: 'white',
+    border: '1px solid black'
+  }
+});
+
+// Legend title
+var legendTitle = ui.Label({
+  value: 'EUDR Compliance Layers',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '16px',
+    margin: '0 0 4px 0',
+    padding: '0'
+  }
+});
+
+// Forest section
+var forestTitle = ui.Label({
+  value: 'Forest Coverage (2020):',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '14px',
+    margin: '8px 0 4px 0',
+    color: '#006400'
+  }
+});
+
+// Forest legend items
+var sbtnForestLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#228B22', fontSize: '16px'}),
+    ui.Label('SBTN Forest 2020', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+var gfwForestLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#006400', fontSize: '16px'}),
+    ui.Label('GFW Forest 2020', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+var jrcForestLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#32CD32', fontSize: '16px'}),
+    ui.Label('JRC Forest 2020', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+// Loss section
+var lossTitle = ui.Label({
+  value: 'Forest Loss:',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '14px',
+    margin: '8px 0 4px 0',
+    color: '#8B0000'
+  }
+});
+
+// Loss legend items
+var sbtnLossLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#FF4500', fontSize: '16px'}),
+    ui.Label('SBTN Loss (2021-2025)', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+var gfwLossLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#DC143C', fontSize: '16px'}),
+    ui.Label('GFW Loss (2021-2025)', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+var jrcLossLegend = ui.Panel({
+  widgets: [
+    ui.Label('■', {margin: '1px 8px 1px 0', color: '#8B0000', fontSize: '16px'}),
+    ui.Label('JRC Loss (2021-2024)', {margin: '0', fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+
+// Add all widgets to legend
+legend.add(legendTitle);
+legend.add(forestTitle);
+legend.add(sbtnForestLegend);
+legend.add(gfwForestLegend);
+legend.add(jrcForestLegend);
+legend.add(lossTitle);
+legend.add(sbtnLossLegend);
+legend.add(gfwLossLegend);
+legend.add(jrcLossLegend);
+
+// Add legend to map
+Map.add(legend);
+
+// ===== STATISTICS AND INSPECTION =====
+
+// Define area of interest (Indonesia bbox)
+var indonesia = ee.Geometry.Rectangle([95, -11, 141, 6]);
+Map.centerObject(indonesia, 5);
+
+// Print statistics untuk memverifikasi data
+print('=== EUDR COMPLIANCE LAYER STATISTICS ===');
+
+// Forest coverage statistics
+var sbtnStats = sbtn_mask.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('1. SBTN Forest 2020 Stats:', sbtnStats);
+
+var primaryStats = primary_2020.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('2. GFW Forest 2020 Stats:', primaryStats);
+
+var eufoStats = eufo_mask.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('3. JRC Forest 2020 Stats:', eufoStats);
+
+// Loss statistics
+var sbtnLossStats = sbtn_loss_2021_2025.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('4. SBTN Loss (2021-2025) Stats:', sbtnLossStats);
+
+var gfwLossStats = gfw_loss_2021_2025.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('5. GFW Loss (2021-2025) Stats:', gfwLossStats);
+
+var jrcLossStats = jrc_total_deforestation.reduceRegion({
+  reducer: ee.Reducer.sum().combine({
+    reducer2: ee.Reducer.count(),
+    sharedInputs: true
+  }),
+  geometry: indonesia,
+  scale: 1000,
+  maxPixels: 1e13,
+  bestEffort: true
+});
+print('6. JRC Loss (2021-2024) Stats:', jrcLossStats);
+
+// ===== INSPECTOR TOOL =====
+
+// Create inspector function
+var inspector = function(coords) {
+  var point = ee.Geometry.Point(coords.lon, coords.lat);
+  
+  var sampleData = ee.Image.cat([
+    sbtn_mask.rename('sbtn_forest_2020'),
+    primary_2020.rename('gfw_forest_2020'), 
+    eufo_mask.rename('jrc_forest_2020'),
+    sbtn_loss_2021_2025.rename('sbtn_loss_2021_2025'),
+    gfw_loss_2021_2025.rename('gfw_loss_2021_2025'),
+    jrc_total_deforestation.rename('jrc_loss_2021_2024')
+  ]).reduceRegion({
+    reducer: ee.Reducer.first(),
+    geometry: point,
+    scale: 30,
+    maxPixels: 1
+  });
+  
+  print('=== PIXEL INSPECTION ===');
+  print('Coordinates:', coords);
+  print('Values:', sampleData);
+};
+
+// Enable click inspection
+Map.onClick(inspector);
+
+// ===== SAMPLE POINTS FOR TESTING =====
+
+// Add some sample points to test different scenarios
+var testPoints = [
+  {name: 'Test Point 1 (Sumatra)', coords: [100, -2], color: 'red'},
+  {name: 'Test Point 2 (Kalimantan)', coords: [110, 0], color: 'blue'}, 
+  {name: 'Test Point 3 (Papua)', coords: [135, -5], color: 'green'}
+];
+
+testPoints.forEach(function(point) {
+  Map.addLayer(
+    ee.Geometry.Point([point.coords[0], point.coords[1]]).buffer(1000),
+    {color: point.color},
+    point.name,
+    false
+  );
+});
+
+print('=== EUDR COMPLIANCE LAYERS INFORMATION ===');
+print('This script shows 6 key layers for EUDR compliance analysis:');
+print('');
+print('FOREST COVERAGE (2020) - GREEN COLORS:');
+print('1. SBTN Forest 2020: Natural lands from WRI/SBTN dataset (Forest Green)');
+print('2. GFW Forest 2020: Primary humid tropical forests (Dark Green)');
+print('3. JRC Forest 2020: European forest coverage from JRC/GFC2020 (Lime Green)');
+print('');
+print('FOREST LOSS - RED COLORS:');
+print('4. SBTN Loss (2021-2025): GFC loss + GLAD 2025 alerts in SBTN areas (Red Orange)');
+print('5. GFW Loss (2021-2025): GFC loss + GLAD 2025 alerts in primary forests (Crimson)');
+print('6. JRC Loss (2021-2024): TMF deforestation in JRC forest areas (Dark Red)');
+print('');
+print('DATASETS USED:');
+print('- SBTN: WRI/SBTN/naturalLands/v1_1/2020');
+print('- GFW: UMD/GLAD/PRIMARY_HUMID_TROPICAL_FORESTS/v1 + UMD/hansen/global_forest_change_2024_v1_12');
+print('- JRC: JRC/GFC2020/V2 + projects/JRC/TMF/v1_2024/DeforestationYear');
+print('- GLAD 2025: projects/glad/alert/UpdResult (conf25 & alertDate25)');
+print('');
+print('Legend is displayed at bottom-left corner');
+print('Click on map to inspect pixel values');
+print('Toggle layers in the Layers panel to compare');
