@@ -89,11 +89,14 @@ app = FastAPI(title="Simplified EUDR Forest Compliance API",
                   "url": "https://forestapi.com/license"
               },
               servers=[{
+                  "url": "https://api.sustainit.id",
+                  "description": "Production server"
+              }, {
                   "url": "https://eudr-multilayer-api.fly.dev",
                   "description": "Development server"
               }, {
                   "url": "https://global-compliance-system.com/",
-                  "description": "Production server"
+                  "description": "Alternative production server"
               }, {
                   "url": "http://localhost:8000",
                   "description": "Local development server",
