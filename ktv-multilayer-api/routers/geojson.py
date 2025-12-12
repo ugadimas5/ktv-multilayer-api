@@ -11,7 +11,7 @@ import json
 import tempfile
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from loguru import logger
 
@@ -30,6 +30,12 @@ router = APIRouter(
 class GeoJSONRequest(BaseModel):
     geojson: Dict[str, Any]
     analysis_params: Optional[Dict[str, Any]] = {}
+
+
+class FloodAnalysisRequest(BaseModel):
+    """Request model for flood analysis"""
+    geojson: Dict[str, Any]
+    years: Optional[List[int]] = None
 
 
 @router.post("/upload-geojson-notrounded", tags=["EUDR File Upload"], summary="Upload GeoJSON and get unrounded results")
@@ -538,4 +544,428 @@ async def refresh_gee_datasets():
         return gee_service.refresh_datasets()
     except Exception as e:
         logger.error(f"Error refreshing GEE datasets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =================Route for GEE Flood Analysis Services=========================
+
+def _get_flood_service():
+    """Get GEE Flood service with lazy loading"""
+    try:
+        from services.gee_flood_service import gee_flood_service
+        return gee_flood_service
+    except ImportError as e:
+        logger.error(f"Failed to import GEE Flood service: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="GEE Flood Service not available. Please install Earth Engine dependencies."
+        )
+
+
+@router.get("/gee/flood/datasets", tags=["Disaster"])
+async def get_flood_datasets():
+    """
+    Get list of available flood analysis datasets.
+    
+    **Available Datasets:**
+    - **flood_hazard**: Composite flood hazard index (0-1) across 2016-2023
+    - **permanent_water**: Permanent water bodies detection
+    - **flood_2023**: Flood areas detected in 2023
+    - **flood_2022**: Flood areas detected in 2022
+    - **flood_2021**: Flood areas detected in 2021
+    
+    **Data Source:** Sentinel-1 GRD radar imagery
+    
+    **Methodology:**
+    - VV polarization band analysis
+    - Minimum composite (10th percentile)
+    - Speckle filtering (50m focal mean)
+    - Water threshold: -15 dB
+    - Flood = water in wet season AND dry in dry season
+    
+    **Season Configuration:**
+    - Wet Season: December (12-01 to 12-31)
+    - Dry Season: August (08-01 to 08-31)
+    - *Note: Adjust dates based on your region's climate*
+    """
+    try:
+        flood_service = _get_flood_service()
+        return flood_service.get_available_datasets()
+    except Exception as e:
+        logger.error(f"Error getting flood datasets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gee/flood/tiles/{dataset}/{z}/{x}/{y}", tags=["Disaster"])
+async def get_flood_tile(
+    dataset: str,
+    z: int,
+    x: int,
+    y: int,
+    request: Request
+):
+    """
+    Get map tile for flood analysis dataset.
+    
+    **Parameters:**
+    - **dataset**: Dataset name (flood_hazard, permanent_water, flood_2023, etc.)
+    - **z**: Zoom level (0-18)
+    - **x**: Tile X coordinate
+    - **y**: Tile Y coordinate
+    
+    **Returns:** Redirects to Earth Engine tile URL
+    
+    **Note:** Tiles are generated globally. For region-specific analysis, use the `/gee/flood/analyze` endpoint.
+    
+    **Usage Examples:**
+    ```javascript
+    // Leaflet - Flood Hazard Layer
+    L.tileLayer('https://your-api.com/api/v1/gee/flood/tiles/flood_hazard/{z}/{x}/{y}').addTo(map);
+    
+    // Leaflet - Permanent Water
+    L.tileLayer('https://your-api.com/api/v1/gee/flood/tiles/permanent_water/{z}/{x}/{y}').addTo(map);
+    
+    // OpenLayers - Flood 2023
+    new ol.layer.Tile({
+        source: new ol.source.XYZ({
+            url: 'https://your-api.com/api/v1/gee/flood/tiles/flood_2023/{z}/{x}/{y}'
+        })
+    });
+    ```
+    """
+    try:
+        flood_service = _get_flood_service()
+        # For global tiles, use default bounds
+        return flood_service.get_tile(dataset, z, x, y, bounds=None)
+    except Exception as e:
+        logger.error(f"Error getting flood tile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gee/flood/tiles/{dataset}", tags=["Disaster"])
+async def get_flood_dataset_info(
+    dataset: str,
+    request: Request
+):
+    """
+    Get detailed information and tile URL template for flood dataset.
+    
+    **Parameters:**
+    - **dataset**: Dataset name (flood_hazard, permanent_water, flood_YYYY)
+    
+    **Returns:**
+    - Dataset metadata and description
+    - Tile URL templates for Leaflet, OpenLayers, MapBox
+    - Visualization parameters
+    - Code examples for web mapping
+    
+    **Perfect for:** Setting up flood monitoring dashboards and risk assessment maps
+    """
+    try:
+        flood_service = _get_flood_service()
+        base_url = f"{request.url.scheme}://{request.url.netloc}"
+        return flood_service.get_dataset_info(dataset, base_url)
+    except Exception as e:
+        logger.error(f"Error getting flood dataset info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FloodAnalysisRequest(BaseModel):
+    """Request model for flood analysis"""
+    geojson: Dict[str, Any]
+    years: Optional[List[int]] = None
+
+
+@router.post("/gee/flood/analyze", tags=["Disaster"])
+async def analyze_flood_area(request: FloodAnalysisRequest):
+    """
+    Analyze flood statistics for a specific area (GeoJSON).
+    
+    **Request Body:**
+    ```json
+    {
+      "geojson": {
+        "type": "Polygon",
+        "coordinates": [[[106.8, -6.2], [106.9, -6.2], [106.9, -6.1], [106.8, -6.1], [106.8, -6.2]]]
+      },
+      "years": [2020, 2021, 2022, 2023]
+    }
+    ```
+    
+    **Returns:**
+    - Flood hazard index for the area
+    - Yearly flood area statistics (hectares)
+    - Summary with max/min flood years
+    - Total area and average flood area
+    
+    **Analysis Details:**
+    - Processes Sentinel-1 radar data
+    - Compares wet (December) vs dry (August) seasons
+    - Calculates flood frequency across years
+    - Returns area in hectares
+    
+    **Processing Time:** 10-30 seconds depending on area size
+    """
+    try:
+        flood_service = _get_flood_service()
+        
+        # Validate years
+        if request.years:
+            valid_years = [y for y in request.years if 2021 <= y <= 2025]
+            if not valid_years:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Years must be between 2021 and 2025"
+                )
+            years = valid_years
+        else:
+            years = None
+        
+        # Run analysis
+        result = flood_service.analyze_flood_stats(request.geojson, years)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing flood area: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gee/flood/bbox/info", tags=["Disaster"])
+async def get_flood_bbox_info():
+    """
+    Get information about current active bounding box for flood analysis.
+    
+    **Returns:**
+    - Current active bounds (custom or default)
+    - Bounds source (flood_test.geojson or default Indonesia)
+    - Bounds coordinates [west, south, east, north]
+    
+    **Use Case:** Check which area is being used for tile generation
+    """
+    try:
+        flood_service = _get_flood_service()
+        
+        is_custom = flood_service._custom_bounds_coords is not None
+        
+        # Get bbox coords
+        if is_custom:
+            bbox = flood_service._custom_bounds_coords
+        else:
+            bbox = flood_service._default_bounds_coords
+        
+        return {
+            "status": "success",
+            "bounds_type": "custom" if is_custom else "default",
+            "bounds_source": "flood_test.geojson" if is_custom else "Indonesia default",
+            "bbox": bbox,
+            "bbox_description": f"West: {bbox[0]:.2f}°, South: {bbox[1]:.2f}°, East: {bbox[2]:.2f}°, North: {bbox[3]:.2f}°",
+            "area_info": {
+                "location": "Aceh region" if is_custom else "Indonesia",
+                "approximate_size_km2": round(
+                    (bbox[2] - bbox[0]) * 111 * (bbox[3] - bbox[1]) * 111, 2
+                )
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting bbox info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gee/flood/bbox/reset", tags=["Disaster"])
+async def reset_flood_bbox():
+    """
+    Reset bounding box to default Indonesia bounds.
+    
+    **Effect:** 
+    - Clears custom bbox from flood_test.geojson
+    - Reverts to full Indonesia coverage
+    - Clears all cached tiles (forces regeneration)
+    
+    **Use when:** You want to switch from local area back to Indonesia-wide view
+    """
+    try:
+        flood_service = _get_flood_service()
+        flood_service._custom_bounds_coords = None
+        flood_service.clear_cache()
+        
+        logger.info("Reset to default Indonesia bounds")
+        
+        return {
+            "status": "success",
+            "message": "Bounding box reset to default Indonesia",
+            "bounds": "95°E to 141°E, 11°S to 6°N",
+            "cache_cleared": True
+        }
+    except Exception as e:
+        logger.error(f"Error resetting bbox: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# GEE COMMODITY SERVICES
+# =============================================================================
+
+def _get_commodity_service():
+    """Get GEE Commodity service with lazy loading"""
+    try:
+        from services.gee_commodity_service import gee_commodity_service
+        return gee_commodity_service
+    except ImportError as e:
+        logger.error(f"Failed to import GEE Commodity service: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="GEE Commodity Service not available. Please install Earth Engine dependencies."
+        )
+
+
+@router.get("/gee/commodity/datasets", tags=["Disaster"])
+async def get_commodity_datasets():
+    """
+    Get list of available commodity datasets from Forest Data Partnership.
+    
+    **Available Commodities:**
+    - **rubber**: Rubber plantation probability map
+    - **palm**: Palm oil plantation probability map
+    - **cocoa**: Cocoa plantation probability map
+    - **coffee**: Coffee plantation probability map
+    
+    **Data Source:** Forest Data Partnership (FDP)
+    
+    **Model:** model_2025a
+    
+    **Threshold:** 0.5 probability (binary output)
+    
+    **Usage Example:**
+    ```javascript
+    // Leaflet
+    L.tileLayer('http://localhost:8000/api/v1/gee/commodity/tiles/rubber/{z}/{x}/{y}')
+        .addTo(map);
+    ```
+    
+    **Response includes:**
+    - Dataset metadata (name, description, asset ID)
+    - Visualization styles (colors)
+    - Cache information
+    - Active bounding box
+    """
+    try:
+        commodity_service = _get_commodity_service()
+        datasets = commodity_service.get_available_datasets()
+        return datasets
+    except Exception as e:
+        logger.error(f"Error getting commodity datasets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gee/commodity/tiles/{commodity}", tags=["Disaster"])
+async def get_commodity_tile_info(commodity: str, request: Request):
+    """
+    Get detailed information for a specific commodity dataset.
+    
+    **Path Parameters:**
+    - **commodity**: Commodity name (rubber, palm, cocoa, coffee)
+    
+    **Returns:**
+    - Dataset details and metadata
+    - Tile URL templates for different mapping libraries
+    - Visualization parameters
+    - Cache status
+    
+    **Example:** `/gee/commodity/tiles/rubber`
+    """
+    try:
+        commodity_service = _get_commodity_service()
+        base_url = str(request.base_url).rstrip('/')
+        info = commodity_service.get_dataset_info(commodity, base_url)
+        return info
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting commodity tile info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gee/commodity/tiles/{commodity}/{z}/{x}/{y}", tags=["Disaster"])
+async def get_commodity_tile(commodity: str, z: int, x: int, y: int):
+    """
+    Get map tile for commodity visualization.
+    
+    **Path Parameters:**
+    - **commodity**: Commodity name (rubber, palm, cocoa, coffee)
+    - **z**: Zoom level (0-20)
+    - **x**: Tile X coordinate
+    - **y**: Tile Y coordinate
+    
+    **Returns:** Redirect to Google Earth Engine tile URL
+    
+    **Note:** 
+    - First request may take 5-10 seconds while GEE generates map ID
+    - Subsequent requests use cached map ID (1 hour cache)
+    - Tiles automatically clipped to custom bbox if flood_test.geojson exists
+    
+    **Visualization:**
+    - Binary presence/absence (threshold: 0.5 probability)
+    - Transparent background (0 values masked)
+    - Color-coded by commodity type
+    
+    **Example:** `/gee/commodity/tiles/rubber/10/512/384`
+    """
+    try:
+        commodity_service = _get_commodity_service()
+        
+        # Ensure EE is initialized (retry if needed)
+        if not commodity_service.is_initialized:
+            logger.info("Earth Engine not initialized, attempting to initialize now...")
+            commodity_service._authenticate_ee()
+            
+            if not commodity_service.is_initialized:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Earth Engine initialization failed. Check service account credentials."
+                )
+        
+        # Get tile (uses cached map ID if available)
+        return commodity_service.get_tile(commodity, z, x, y)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting commodity tile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gee/commodity/cache/clear", tags=["Disaster"])
+async def clear_commodity_cache(commodity: Optional[str] = None):
+    """
+    Clear map ID cache for commodity datasets.
+    
+    **Query Parameters:**
+    - **commodity** (optional): Specific commodity to clear. If omitted, clears all.
+    
+    **Use when:**
+    - Visualization looks outdated
+    - Bounding box changed
+    - Force tile regeneration
+    
+    **Effect:**
+    - Next tile request will regenerate map ID from GEE
+    - May take 5-10 seconds for first tile after clear
+    """
+    try:
+        commodity_service = _get_commodity_service()
+        commodity_service.clear_cache(commodity)
+        
+        msg = f"Cleared cache for {commodity}" if commodity else "Cleared all commodity cache"
+        logger.info(msg)
+        
+        return {
+            "status": "success",
+            "message": msg,
+            "affected_commodities": [commodity] if commodity else list(commodity_service.datasets.keys())
+        }
+    except Exception as e:
+        logger.error(f"Error clearing commodity cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
