@@ -1,29 +1,9 @@
-from services.gee_dataset_service import gee_dataset_service
 
-
-"""
-GeoJSON File Upload Router
-Handles file upload and GeoJSON processing endpoints
-"""
-import os
-import json
-import tempfile
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
-from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from loguru import logger
-
-import ee
-import asyncio
-from services.data.multilayer_service import MultilayerService
-
-
-
-from fastapi.requests import Request as FastAPIRequest
+from fastapi import Request as FastAPIRequest
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any
+from loguru import logger
 # Add session middleware (reminder: add to main app if not present)
 # from fastapi import FastAPI
 # app = FastAPI()
@@ -32,7 +12,7 @@ from typing import Dict, Any
 class SetFloodBBoxRequest(BaseModel):
     geometry: Dict[str, Any]
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request, Body
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 
 # Router instance
 router = APIRouter(
@@ -79,17 +59,23 @@ async def set_flood_bbox(
         logger.error(f"Error setting session bbox: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 # Route khusus tile Indonesia (masking ADM0_CODE=116)
+from services.gee_dataset_service import gee_dataset_service
 
 
-
-
-
-# Router instance
-router = APIRouter(
-    prefix="/api/v1",
-    tags=["GeoJSON Upload & Processing"],
-    responses={404: {"description": "Not found"}},
-)
+"""
+GeoJSON File Upload Router
+Handles file upload and GeoJSON processing endpoints
+"""
+import os
+import json
+import tempfile
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import ee
+import asyncio
+from services.data.multilayer_service import MultilayerService
 
 # Pydantic models
 class GeoJSONRequest(BaseModel):
@@ -713,106 +699,6 @@ async def get_landslide_dataset_info(
         logger.error(f"Error getting landslide dataset info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ================= Landslide Batch Export Endpoint =====================
-@router.post("/gee/landslide/export/sumatra", tags=["Disaster"], summary="Batch export landslide masks for Sumatra provinces")
-async def export_landslide_sumatra():
-    """
-    Batch export landslide mask (Nov-Dec 2025) for all districts in Aceh, Sumatera Utara, Sumatera Barat to Google Drive.
-    This will start Earth Engine export tasks for each district (GAUL2) in the target provinces.
-    """
-    import ee
-    import re
-    try:
-        ee.Initialize()
-        GAUL_2024_L2 = ee.FeatureCollection("projects/sat-io/open-datasets/FAO/GAUL/GAUL_2024_L2")
-        provinces = ['Aceh', 'Sumatera Utara', 'Sumatera Barat']
-        nov_start = ee.Date('2025-11-01')
-        nov_end   = ee.Date('2025-12-01')
-        dec_start = ee.Date('2025-12-01')
-        dec_end   = ee.Date('2026-01-01')
-        THRESH_DB = -2
-        out_folder = "Landslide_Detection_Sumatra"
-        scale = 10
-        crs = "EPSG:4326"
-        max_pixels = 1e13
-
-        def get_s1_collection(geom, start, end):
-            return (ee.ImageCollection('COPERNICUS/S1_GRD')
-                    .filterBounds(geom)
-                    .filterDate(start, end)
-                    .filter(ee.Filter.eq('instrumentMode', 'IW'))
-                    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-                    .filter(ee.Filter.eq('resolution_meters', 10))
-                    .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
-                    .select('VV'))
-
-        def to_db(img):
-            return ee.Image(10).multiply(img.log10()).copyProperties(img, img.propertyNames())
-
-        def monthly_mean_db(geom, start, end):
-            return get_s1_collection(geom, start, end).map(to_db).mean()
-
-        def make_landslide_mask(feature):
-            geom = feature.geometry()
-            nov_mean = monthly_mean_db(geom, nov_start, nov_end)
-            dec_mean = monthly_mean_db(geom, dec_start, dec_end)
-            change = dec_mean.subtract(nov_mean).rename('Change_dB')
-            mask = change.lt(THRESH_DB).selfMask().rename('LandslideMask')
-            return (mask.clip(geom)
-                    .set({
-                        'gaul0': feature.get('gaul0_name'),
-                        'gaul1': feature.get('gaul1_name'),
-                        'gaul2': feature.get('gaul2_name'),
-                        'gaul2_code': feature.get('gaul2_code'),
-                        'thresh_db': THRESH_DB
-                    }))
-
-        def sanitize_name(s: str) -> str:
-            s = re.sub(r'\s+', '_', s)
-            s = re.sub(r'[^\w_]', '', s)
-            return s
-
-        districts_fc = GAUL_2024_L2.filter(ee.Filter.inList('gaul1_name', provinces))
-        n = districts_fc.size().getInfo()
-        districts_list = districts_fc.toList(districts_fc.size())
-
-        tasks = []
-        for i in range(n):
-            ft = ee.Feature(districts_list.get(i))
-            geom = ft.geometry()
-            img = make_landslide_mask(ft)
-            prov = ft.get('gaul1_name').getInfo()
-            kab  = ft.get('gaul2_name').getInfo()
-            code = str(ft.get('gaul2_code').getInfo())
-            name_safe = sanitize_name(f"{prov}_{kab}_{code}")
-            desc = f"LandslideMask_NovDec2025_{name_safe}"
-            task = ee.batch.Export.image.toDrive(
-                image=img,
-                description=desc,
-                folder=out_folder,
-                region=geom,
-                scale=scale,
-                crs=crs,
-                maxPixels=max_pixels
-            )
-            task.start()
-            tasks.append({
-                'description': desc,
-                'task_id': task.id
-            })
-
-        return {
-            "status": "success",
-            "message": f"Started {len(tasks)} export tasks.",
-            "tasks": tasks[:5],  # show first 5 as example
-            "total_tasks": len(tasks)
-        }
-    except Exception as e:
-        from loguru import logger
-        logger.error(f"Landslide export error: {e}")
-        return {"status": "error", "message": str(e)}
-
-
 
 @router.get("/gee/flood/datasets", tags=["Disaster"])
 async def get_flood_datasets():
@@ -849,7 +735,6 @@ async def get_flood_datasets():
 
 
 
-from fastapi import Body
 from typing import Union
 
 class FloodTileRequest(BaseModel):
@@ -921,10 +806,6 @@ async def get_flood_dataset_info(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class FloodAnalysisRequest(BaseModel):
-    """Request model for flood analysis"""
-    geojson: Dict[str, Any]
-    years: Optional[List[int]] = None
 
 
 @router.post("/gee/flood/analyze", tags=["Disaster"])

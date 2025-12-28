@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 # Load environment variables
 if os.getenv("APP_ENV") != "production":
@@ -29,9 +30,10 @@ from routers.gaul_csv import router as gaul_csv_router
 from routers.protected_area import router as protected_area_router
 
 # Create FastAPI application
-app = FastAPI(title="Simplified EUDR Forest Compliance API",
-              version="2.1.0",
-              description="""
+app = FastAPI(
+    title="Simplified EUDR Forest Compliance API",
+    version="2.1.0",
+    description="""
     Simplified EUDR compliance monitoring using 3 core satellite datasets with binary risk classification.
     
     **🌟 NEW FEATURES:**
@@ -80,27 +82,24 @@ app = FastAPI(title="Simplified EUDR Forest Compliance API",
     - Regulatory due diligence
     - Bulk analysis of farm plots
     """,
-              contact={
-                  "name": "Simplified EUDR API Support",
-                  "email": "support@forestapi.com"
-              },
-              license_info={
-                  "name": "Commercial License",
-                  "url": "https://forestapi.com/license"
-              },
-              servers=[{
-                  "url": "https://api-v2.sustainit.id",
-                  "description": "Production server"
-              }, {
-                  "url": "https://eudr-multilayer-api.fly.dev",
-                  "description": "Development server"
-              }, {
-                  "url": "https://global-compliance-system.com/",
-                  "description": "Alternative production server"
-              }, {
-                  "url": "http://localhost:8000",
-                  "description": "Local development server",
-              }])
+    contact={
+        "name": "Simplified EUDR API Support",
+        "email": "support@forestapi.com"
+    },
+    license_info={
+        "name": "Commercial License",
+        "url": "https://forestapi.com/license"
+    },
+    servers=[
+        {"url": "https://api-v2.sustainit.id", "description": "Production server"},
+        {"url": "https://eudr-multilayer-api.fly.dev", "description": "Development server"},
+        {"url": "https://global-compliance-system.com/", "description": "Alternative production server"},
+        {"url": "http://localhost:8000", "description": "Local development server"}
+    ]
+)
+
+# Add SessionMiddleware for session support (required for flood tile endpoints)
+app.add_middleware(SessionMiddleware, secret_key="change-this-secret-key")
 
 # CORS middleware
 app.add_middleware(

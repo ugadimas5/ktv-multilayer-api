@@ -31,12 +31,8 @@ class GEECommodityService:
         # Initialize datasets
         self._initialize_datasets()
         
-        # Store bounds as raw coordinates (lazy initialization)
+        # Default bounds (Indonesia) if no geometry provided
         self._default_bounds_coords = [95, -11, 141, 6]  # Indonesia
-        self._custom_bounds_coords = None
-        
-        # Load custom bbox if exists
-        self._load_default_bbox()
         
         # Initialize Earth Engine
         try:
@@ -51,22 +47,22 @@ class GEECommodityService:
             'rubber': {
                 'min': 1,
                 'max': 1,
-                'palette': ['8B4513']  # Saddle Brown
+                'palette': ['#2c7bb6']  # Rubber Blue
             },
             'palm': {
                 'min': 1,
                 'max': 1,
-                'palette': ['228B22']  # Forest Green
+                'palette': ['#abdda4']  # Palm Green
             },
             'cocoa': {
                 'min': 1,
                 'max': 1,
-                'palette': ['654321']  # Dark Brown
+                'palette': ['#018571']  # Cocoa Teal
             },
             'coffee': {
                 'min': 1,
                 'max': 1,
-                'palette': ['6F4E37']  # Coffee Brown
+                'palette': ['#a6611a']  # Coffee Brown
             }
         }
     
@@ -153,44 +149,155 @@ class GEECommodityService:
             logger.warning("Commodity service will initialize EE on first tile request")
             self.is_initialized = False
     
-    def _load_default_bbox(self):
-        """Load bbox from flood_test.geojson if exists"""
+    # REMOVED: _load_default_bbox, get_active_bounds
+    # Bounds/geometry must now be provided explicitly to all methods (from session or request)
+    
+    def _get_boundary_geometry(self, country: Optional[str], province: Optional[str], district: Optional[str]) -> Optional[ee.Geometry]:
+        """
+        Get geometry from GAUL datasets based on location parameters
+        """
+        if not country and not province and not district:
+            return None
+
         try:
-            import json
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            geojson_path = os.path.join(base_dir, 'data', 'temp', 'flood_test.geojson')
+            logger.info(f"Fetching boundary geometry for: Country={country}, Province={province}, District={district}")
+            # Define collections
+            l1_coll = ee.FeatureCollection("projects/sat-io/open-datasets/FAO/GAUL/GAUL_2024_L1")
+            l2_coll = ee.FeatureCollection("projects/sat-io/open-datasets/FAO/GAUL/GAUL_2024_L2")
             
-            if os.path.exists(geojson_path):
-                with open(geojson_path, 'r') as f:
-                    geojson_data = json.load(f)
+            filtered = None
+            
+            if district:
+                # Use L2 for district
+                filtered = l2_coll.filter(ee.Filter.eq('gaul2_name', district))
+                if province:
+                    filtered = filtered.filter(ee.Filter.eq('gaul1_name', province))
+                if country:
+                    filtered = filtered.filter(ee.Filter.eq('gaul0_name', country))
+                
+            elif province:
+                # Use L1 for province
+                filtered = l1_coll.filter(ee.Filter.eq('gaul1_name', province))
+                if country:
+                    filtered = filtered.filter(ee.Filter.eq('gaul0_name', country))
+                
+            elif country:
+                # Use L1 for country (aggregating provinces)
+                filtered = l1_coll.filter(ee.Filter.eq('gaul0_name', country))
+            
+            if filtered:
+                # Check if any features exist
+                count = filtered.size().getInfo()
+                
+                if count > 0:
+                    logger.info(f"Found {count} boundary features. Returning geometry.")
+                    return filtered.geometry()
+                else:
+                    logger.warning(f"No boundary features found for Country={country}, Province={province}, District={district}")
                     
-                    # Extract bbox
-                    if geojson_data['type'] == 'FeatureCollection':
-                        coords = geojson_data['features'][0]['geometry']['coordinates'][0]
-                    else:
-                        coords = geojson_data['geometry']['coordinates'][0]
-                    
-                    lons = [c[0] for c in coords]
-                    lats = [c[1] for c in coords]
-                    bbox = [min(lons), min(lats), max(lons), max(lats)]
-                    
-                    self._custom_bounds_coords = bbox
-                    logger.info(f"Loaded custom bbox for commodity: {bbox}")
-            else:
-                logger.info("flood_test.geojson not found, using default Indonesia bounds")
+                    # DEBUG: List available districts if province is found
+                    if province and district:
+                        try:
+                            # Check if province exists
+                            prov_check = l2_coll.filter(ee.Filter.eq('gaul1_name', province))
+                            if country:
+                                prov_check = prov_check.filter(ee.Filter.eq('gaul0_name', country))
+                            
+                            prov_count = prov_check.size().getInfo()
+                            if prov_count > 0:
+                                # List first 50 districts in this province
+                                districts = prov_check.aggregate_array('gaul2_name').distinct().sort().slice(0, 50).getInfo()
+                                logger.info(f"Available districts in {province}: {districts}")
+                            else:
+                                logger.warning(f"Province '{province}' not found either. Check spelling.")
+                                
+                                # List available provinces in this country
+                                if country:
+                                    country_check = l1_coll.filter(ee.Filter.eq('gaul0_name', country))
+                                    c_count = country_check.size().getInfo()
+                                    if c_count > 0:
+                                        provs = country_check.aggregate_array('gaul1_name').distinct().sort().getInfo()
+                                        logger.info(f"Available provinces in {country}: {provs}")
+                                    else:
+                                        logger.warning(f"Country '{country}' not found.")
+                                        
+                        except Exception as debug_e:
+                            logger.error(f"Debug error: {debug_e}")
+
+                    return None
+                
+            return None
+            
         except Exception as e:
-            logger.warning(f"Could not load bbox from flood_test.geojson: {e}")
-    
-    def get_active_bounds(self) -> ee.Geometry:
-        """Get currently active bounds"""
-        if not self.is_initialized:
-            self._authenticate_ee()
-        
-        if self._custom_bounds_coords:
-            return ee.Geometry.Rectangle(self._custom_bounds_coords)
-        else:
-            return ee.Geometry.Rectangle(self._default_bounds_coords)
-    
+            logger.error(f"Error getting boundary geometry: {e}")
+            return None
+
+    def calculate_area(self, commodity: str, country: Optional[str] = None, province: Optional[str] = None, district: Optional[str] = None) -> Dict[str, Any]:
+        """Calculate area of commodity for the given boundary"""
+        try:
+            # Ensure EE is initialized
+            if not self.is_initialized:
+                self._authenticate_ee()
+                if not self.is_initialized:
+                     raise HTTPException(status_code=503, detail="Earth Engine not initialized")
+
+            # Get boundary
+            bounds = self._get_boundary_geometry(country, province, district)
+            if not bounds:
+                if not country:
+                     raise HTTPException(status_code=400, detail="At least country must be specified for area calculation")
+                bounds = ee.Geometry.Rectangle(self._default_bounds_coords)
+
+            # Get image
+            image = self._get_commodity_image(commodity, bounds)
+            # image is binary 0/1.
+            mask = image.gt(0)
+
+            # Calculate area
+            area_image = mask.multiply(ee.Image.pixelArea())
+            
+            # Determine appropriate scale to balance speed and accuracy
+            scale = 10
+            if not district:
+                if province:
+                    scale = 30  # Province level: 30m
+                else:
+                    scale = 100 # Country level: 100m
+            
+            logger.info(f"Calculating area for {commodity} with scale={scale}m")
+            
+            stats = area_image.reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=bounds,
+                scale=scale,
+                maxPixels=1e10,
+                bestEffort=True,
+                tileScale=4
+            ).getInfo()
+            
+            area_sqm = 0
+            if stats:
+                area_sqm = list(stats.values())[0]
+                
+            if area_sqm is None: area_sqm = 0
+            area_ha = area_sqm / 10000
+            
+            return {
+                "commodity": commodity,
+                "location": {
+                    "country": country,
+                    "province": province,
+                    "district": district
+                },
+                "scale_used": scale,
+                "area_sqm": round(area_sqm, 2),
+                "area_ha": round(area_ha, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating area: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     def _get_commodity_image(self, commodity: str, bounds: ee.Geometry) -> ee.Image:
         """
         Get commodity image for specific commodity type
@@ -219,9 +326,10 @@ class GEECommodityService:
         
         return binary_image
     
-    def _get_or_create_map_id(self, commodity: str, bounds: ee.Geometry = None) -> Dict:
+    def _get_or_create_map_id(self, commodity: str, bounds: ee.Geometry = None,
+                              country: str = None, province: str = None, district: str = None) -> Dict:
         """Get cached map ID or create new one"""
-        cache_key = f"{commodity}"
+        cache_key = f"{commodity}_{country}_{province}_{district}"
         
         # Check cache (1 hour validity)
         if cache_key in self._map_id_cache:
@@ -230,9 +338,16 @@ class GEECommodityService:
                 logger.info(f"Using cached map ID for {commodity}")
                 return self._map_id_cache[cache_key]
         
-        # Use active bounds if not specified
+        # Resolve geometry from location params if provided
+        if country or province or district:
+            geo = self._get_boundary_geometry(country, province, district)
+            if geo:
+                bounds = geo
+        
+        # Use default bounds if not specified
         if bounds is None:
-            bounds = self.get_active_bounds()
+            import ee
+            bounds = ee.Geometry.Rectangle(self._default_bounds_coords)
         
         logger.info(f"Generating new map ID for {commodity}")
         
@@ -246,6 +361,10 @@ class GEECommodityService:
         vis_params = self.styles[commodity]
         
         try:
+            # Clip image to bounds if we have specific geometry
+            if country or province or district:
+                viz_image = viz_image.clip(bounds)
+
             map_id = viz_image.getMapId(vis_params)
             
             # Cache it
@@ -260,7 +379,10 @@ class GEECommodityService:
             raise HTTPException(status_code=500, detail=f"GEE computation error: {str(e)}")
     
     def get_tile(self, commodity: str, z: int, x: int, y: int,
-                 bounds: Optional[ee.Geometry] = None) -> RedirectResponse:
+                 bounds: Optional[ee.Geometry] = None,
+                 country: Optional[str] = None,
+                 province: Optional[str] = None,
+                 district: Optional[str] = None) -> RedirectResponse:
         """
         Get map tile for commodity dataset
         
@@ -268,6 +390,9 @@ class GEECommodityService:
             commodity: Commodity name (rubber, palm, cocoa, coffee)
             z, x, y: Tile coordinates
             bounds: Optional geometry bounds
+            country: Optional country filter
+            province: Optional province filter
+            district: Optional district filter
         
         Returns:
             Redirect to GEE tile URL
@@ -288,7 +413,7 @@ class GEECommodityService:
                 raise HTTPException(status_code=404, detail=f"Commodity '{commodity}' not found")
             
             # Get or create map ID (cached)
-            map_id = self._get_or_create_map_id(commodity, bounds)
+            map_id = self._get_or_create_map_id(commodity, bounds, country, province, district)
             
             # Generate tile URL
             tile_url = map_id['tile_fetcher'].url_format.format(x=x, y=y, z=z)

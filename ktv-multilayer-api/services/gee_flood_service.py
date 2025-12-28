@@ -28,17 +28,10 @@ class GEEFloodService:
         self._map_id_cache = {}  # Cache map IDs to avoid recomputation
         self._cache_timestamp = {}
         self.is_initialized = False  # Track EE initialization status
-        
         # Initialize datasets (doesn't require EE)
         self._initialize_datasets()
-        
-        # Store bounds as raw coordinates (don't create ee.Geometry yet)
+        # Default bounds (Indonesia) if no geometry provided
         self._default_bounds_coords = [95, -11, 141, 6]  # Indonesia [west, south, east, north]
-        self._custom_bounds_coords = None  # Will be loaded from flood_test.geojson
-        
-        # Try to load custom bbox from flood_test.geojson if exists
-        self._load_default_bbox()
-        
         # Note: EE will be initialized on first tile request (lazy initialization)
     
     def _get_visualization_styles(self) -> Dict[str, Dict]:
@@ -157,6 +150,7 @@ class GEEFloodService:
                 email=None,  # Will be read from the JSON file
                 key_file=str(service_account_path)
             )
+            logger.info("Credentials loaded, calling ee.Initialize()...")
             ee.Initialize(credentials)
             
             self.is_initialized = True
@@ -164,82 +158,13 @@ class GEEFloodService:
             
         except Exception as e:
             logger.error(f"Failed to initialize Earth Engine: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             logger.warning("Flood service will initialize EE on first tile request")
             self.is_initialized = False
     
-    def _load_default_bbox(self):
-        """Load bbox from flood_test.geojson if it exists"""
-        try:
-            # Assuming the service is in services/ folder
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            geojson_path = os.path.join(base_dir, 'data', 'temp', 'flood_test.geojson')
-            
-            if os.path.exists(geojson_path):
-                with open(geojson_path, 'r') as f:
-                    geojson_data = json.load(f)
-                    bbox = self._extract_bbox_from_geojson(geojson_data)
-                    if bbox:
-                        # Store as coords, will create ee.Geometry later when EE is initialized
-                        self._custom_bounds_coords = bbox
-                        logger.info(f"Loaded custom bbox from flood_test.geojson: {bbox}")
-                    else:
-                        logger.warning("Could not extract bbox from flood_test.geojson")
-            else:
-                logger.info("flood_test.geojson not found, using default Indonesia bounds")
-        except Exception as e:
-            logger.warning(f"Could not load bbox from flood_test.geojson: {e}")
-    
-    def _extract_bbox_from_geojson(self, geojson: Dict) -> Optional[List[float]]:
-        """Extract bounding box [west, south, east, north] from GeoJSON"""
-        try:
-            if geojson['type'] == 'FeatureCollection':
-                features = geojson.get('features', [])
-                if not features:
-                    return None
-                coords = features[0]['geometry']['coordinates'][0]
-            elif geojson['type'] == 'Feature':
-                coords = geojson['geometry']['coordinates'][0]
-            else:
-                coords = geojson['coordinates'][0]
-            
-            # Extract min/max lon/lat
-            lons = [c[0] for c in coords]
-            lats = [c[1] for c in coords]
-            
-            return [min(lons), min(lats), max(lons), max(lats)]  # [west, south, east, north]
-        except Exception as e:
-            logger.error(f"Error extracting bbox: {e}")
-            return None
-    
-    def load_bbox_from_geojson(self, geojson_path: str) -> bool:
-        """Load bbox from custom GeoJSON file"""
-        try:
-            with open(geojson_path, 'r') as f:
-                geojson_data = json.load(f)
-                bbox = self._extract_bbox_from_geojson(geojson_data)
-                if bbox:
-                    # Store as coords, will create ee.Geometry when needed
-                    self._custom_bounds_coords = bbox
-                    logger.info(f"Custom bbox loaded: {bbox}")
-                    # Clear cache since bounds changed
-                    self.clear_cache()
-                    return True
-                return False
-        except Exception as e:
-            logger.error(f"Error loading bbox from {geojson_path}: {e}")
-            return False
-    
-    def get_active_bounds(self) -> ee.Geometry:
-        """Get currently active bounds (custom if set, otherwise default)"""
-        # Ensure EE is initialized
-        if not self.is_initialized:
-            self._authenticate_ee()
-        
-        # Create geometry from stored coordinates
-        if self._custom_bounds_coords:
-            return ee.Geometry.Rectangle(self._custom_bounds_coords)
-        else:
-            return ee.Geometry.Rectangle(self._default_bounds_coords)
+    # REMOVED: _load_default_bbox, _extract_bbox_from_geojson, load_bbox_from_geojson, get_active_bounds
+    # Bounds/geometry must now be provided explicitly to all methods (from session or request)
     
     def _get_sentinel1_collection(self):
         """Get Sentinel-1 image collection"""
@@ -267,9 +192,10 @@ class GEEFloodService:
             .select('VV')
         
         # Minimum composite with speckle filtering
+        # Apply focal mean BEFORE clipping to avoid edge effects
         image_min = image.reduce(ee.Reducer.percentile([10])) \
-            .clip(bounds) \
-            .focalMean(50, 'square', 'meters')
+            .focalMean(50, 'square', 'meters') \
+            .clip(bounds)
         
         # Water mask (threshold -15 dB)
         water = image_min.lt(-15).toByte().rename(f"water_{season_config['name']}")
@@ -371,19 +297,106 @@ class GEEFloodService:
         """
         result = self._analyze_flood_year(bounds, year)
         return result.select('flood')
+
+    def _get_boundary_geometry(self, country: Optional[str], province: Optional[str], district: Optional[str]) -> Optional[ee.Geometry]:
+        """
+        Get geometry from GAUL datasets based on location parameters
+        """
+        if not country and not province and not district:
+            return None
+
+        try:
+            logger.info(f"Fetching boundary geometry for: Country={country}, Province={province}, District={district}")
+            # Define collections
+            l1_coll = ee.FeatureCollection("projects/sat-io/open-datasets/FAO/GAUL/GAUL_2024_L1")
+            l2_coll = ee.FeatureCollection("projects/sat-io/open-datasets/FAO/GAUL/GAUL_2024_L2")
+            
+            filtered = None
+            
+            if district:
+                # Use L2 for district
+                filtered = l2_coll.filter(ee.Filter.eq('gaul2_name', district))
+                if province:
+                    filtered = filtered.filter(ee.Filter.eq('gaul1_name', province))
+                if country:
+                    filtered = filtered.filter(ee.Filter.eq('gaul0_name', country))
+                
+            elif province:
+                # Use L1 for province
+                filtered = l1_coll.filter(ee.Filter.eq('gaul1_name', province))
+                if country:
+                    filtered = filtered.filter(ee.Filter.eq('gaul0_name', country))
+                
+            elif country:
+                # Use L1 for country (aggregating provinces)
+                filtered = l1_coll.filter(ee.Filter.eq('gaul0_name', country))
+            
+            if filtered:
+                # Log the filter construction (lightweight)
+                logger.debug("Boundary filter constructed, checking for features...")
+                
+                # Check if any features exist (synchronous call)
+                count = filtered.size().getInfo()
+                
+                if count > 0:
+                    logger.info(f"Found {count} boundary features. Returning geometry.")
+                    return filtered.geometry()
+                else:
+                    logger.warning(f"No boundary features found for Country={country}, Province={province}, District={district}")
+                    
+                    # DEBUG: List available districts if province is found
+                    if province and district:
+                        try:
+                            # Check if province exists
+                            prov_check = l2_coll.filter(ee.Filter.eq('gaul1_name', province))
+                            if country:
+                                prov_check = prov_check.filter(ee.Filter.eq('gaul0_name', country))
+                            
+                            prov_count = prov_check.size().getInfo()
+                            if prov_count > 0:
+                                # List first 50 districts in this province
+                                districts = prov_check.aggregate_array('gaul2_name').distinct().sort().slice(0, 50).getInfo()
+                                logger.info(f"Available districts in {province}: {districts}")
+                            else:
+                                logger.warning(f"Province '{province}' not found either. Check spelling.")
+                                
+                                # List available provinces in this country
+                                if country:
+                                    country_check = l1_coll.filter(ee.Filter.eq('gaul0_name', country))
+                                    c_count = country_check.size().getInfo()
+                                    if c_count > 0:
+                                        provs = country_check.aggregate_array('gaul1_name').distinct().sort().getInfo()
+                                        logger.info(f"Available provinces in {country}: {provs}")
+                                    else:
+                                        logger.warning(f"Country '{country}' not found.")
+                                        
+                        except Exception as debug_e:
+                            logger.error(f"Debug error: {debug_e}")
+
+                    return None
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting boundary geometry: {e}")
+            return None
     
-    def _get_or_create_map_id(self, dataset: str, bounds: ee.Geometry = None) -> Dict:
+    def _get_or_create_map_id(self, dataset: str, bounds: ee.Geometry = None,
+                              country: str = None, province: str = None, district: str = None) -> Dict:
         """
         Get cached map ID or create new one
         
         Args:
             dataset: Dataset name
             bounds: Geometry bounds (if None, uses custom_bounds or default_bounds)
+            country: Country name filter
+            province: Province name filter
+            district: District name filter
         
         Returns:
             Map ID dictionary
         """
-        cache_key = f"{dataset}"
+        cache_key = f"{dataset}_{country}_{province}_{district}"
         
         # Check if cached and still valid (cache for 1 hour)
         if cache_key in self._map_id_cache:
@@ -392,9 +405,24 @@ class GEEFloodService:
                 logger.info(f"Using cached map ID for {dataset}")
                 return self._map_id_cache[cache_key]
         
-        # Use active bounds if not specified
+        # Resolve geometry from location params if provided
+        custom_bounds = None
+        if country or province or district:
+            custom_bounds = self._get_boundary_geometry(country, province, district)
+            if custom_bounds:
+                bounds = custom_bounds
+            else:
+                # If user specified location but we couldn't find it, raise 404
+                # This ensures we don't show the default map when a specific one was requested
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Location not found: Country={country}, Province={province}, District={district}"
+                )
+        
+        # Use default bounds if not specified
         if bounds is None:
-            bounds = self.get_active_bounds()
+            import ee
+            bounds = ee.Geometry.Rectangle(self._default_bounds_coords)
         
         logger.info(f"Generating new map ID for {dataset}")
         
@@ -415,6 +443,11 @@ class GEEFloodService:
         
         # Get map ID (this triggers GEE computation)
         try:
+            # Clip image to bounds if we have specific geometry
+            # Only clip if we have custom bounds or if we want to restrict to default bounds
+            # Using bounds (which is either custom or default) ensures we don't process/show world-wide
+            image = image.clip(bounds)
+
             map_id = image.getMapId(vis_params)
             
             # Cache it
@@ -429,7 +462,10 @@ class GEEFloodService:
             raise HTTPException(status_code=500, detail=f"GEE computation error: {str(e)}")
     
     def get_tile(self, dataset: str, z: int, x: int, y: int, 
-                 bounds: Optional[ee.Geometry] = None) -> RedirectResponse:
+                 bounds: Optional[ee.Geometry] = None,
+                 country: Optional[str] = None,
+                 province: Optional[str] = None,
+                 district: Optional[str] = None) -> RedirectResponse:
         """
         Get map tile for flood dataset
         
@@ -437,6 +473,9 @@ class GEEFloodService:
             dataset: Dataset name (flood_hazard, permanent_water, flood_YYYY)
             z, x, y: Tile coordinates
             bounds: Optional geometry bounds (default: Indonesia)
+            country: Optional country filter
+            province: Optional province filter
+            district: Optional district filter
         
         Returns:
             Redirect to GEE tile URL
@@ -457,7 +496,7 @@ class GEEFloodService:
                 raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found")
             
             # Get or create map ID (cached)
-            map_id = self._get_or_create_map_id(dataset, bounds)
+            map_id = self._get_or_create_map_id(dataset, bounds, country, province, district)
             
             # Generate tile URL
             tile_url = map_id['tile_fetcher'].url_format.format(x=x, y=y, z=z)
@@ -503,7 +542,7 @@ class GEEFloodService:
             "data_source": "Sentinel-1 GRD (COPERNICUS/S1_GRD)",
             "methodology": "VV polarization minimum composite with -15dB threshold",
             "default_bounds": "Indonesia (95°E to 141°E, 11°S to 6°N)",
-            "active_bounds": "Custom bbox" if self._custom_bounds_coords else "Default (Indonesia)",
+            "active_bounds": "Session geometry" if bounds else "Default (Indonesia)",
             "cache_info": {
                 "enabled": True,
                 "duration_seconds": 3600,
@@ -546,6 +585,84 @@ class GEEFloodService:
             "usage_note": "First tile request may be slow as it triggers GEE computation. Subsequent requests use cached map ID."
         }
     
+    def calculate_area(self, dataset: str, country: Optional[str] = None, province: Optional[str] = None, district: Optional[str] = None) -> Dict[str, Any]:
+        """Calculate area of flood/water for the given boundary"""
+        try:
+            # Ensure EE is initialized
+            if not self.is_initialized:
+                self._authenticate_ee()
+                if not self.is_initialized:
+                     raise HTTPException(status_code=503, detail="Earth Engine not initialized")
+
+            # Get boundary
+            bounds = self._get_boundary_geometry(country, province, district)
+            if not bounds:
+                if not country:
+                     raise HTTPException(status_code=400, detail="At least country must be specified for area calculation")
+                bounds = ee.Geometry.Rectangle(self._default_bounds_coords)
+
+            # Get image based on dataset
+            if dataset == 'flood_hazard':
+                image = self.generate_flood_hazard(bounds)
+                # Flood hazard is 0-1 index. We calculate area where hazard > 0
+                mask = image.gt(0)
+            elif dataset == 'permanent_water':
+                image = self.generate_permanent_water(bounds)
+                mask = image.select('water').gt(0)
+            elif dataset.startswith('flood_'):
+                year = int(dataset.split('_')[1])
+                image = self.generate_flood_for_year(bounds, year)
+                mask = image.select('flood').gt(0)
+            else:
+                raise HTTPException(status_code=404, detail=f"Dataset {dataset} not supported for area calculation")
+
+            # Calculate area
+            # pixelArea() gives area in square meters
+            area_image = mask.multiply(ee.Image.pixelArea())
+            
+            # Determine appropriate scale to balance speed and accuracy
+            scale = 10
+            if not district:
+                if province:
+                    scale = 30  # Province level: 30m
+                else:
+                    scale = 100 # Country level: 100m
+            
+            logger.info(f"Calculating area for {dataset} with scale={scale}m")
+            
+            stats = area_image.reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=bounds,
+                scale=scale,
+                maxPixels=1e10,
+                bestEffort=True,
+                tileScale=4
+            ).getInfo()
+            
+            # Get the first value from stats
+            area_sqm = 0
+            if stats:
+                area_sqm = list(stats.values())[0]
+                
+            if area_sqm is None: area_sqm = 0
+            area_ha = area_sqm / 10000
+            
+            return {
+                "dataset": dataset,
+                "location": {
+                    "country": country,
+                    "province": province,
+                    "district": district
+                },
+                "scale_used": scale,
+                "area_sqm": round(area_sqm, 2),
+                "area_ha": round(area_ha, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating area: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     def analyze_flood_stats(self, geojson: Dict[str, Any], years: Optional[List[int]] = None) -> Dict[str, Any]:
         """
         Analyze flood statistics for a GeoJSON area

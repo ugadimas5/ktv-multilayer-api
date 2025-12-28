@@ -86,21 +86,21 @@ Returns list of available flood datasets with metadata.
 }
 ```
 
-### 2. Get Map Tiles
+
+### 2. Get Map Tiles (with Optional Geometry)
 
 ```http
 GET /api/v1/gee/flood/tiles/{dataset}/{z}/{x}/{y}
+POST /api/v1/gee/flood/tiles/{dataset}/{z}/{x}/{y}
 ```
 
 **Parameters:**
-- `dataset`: Dataset name (flood_hazard, permanent_water, flood_2023, etc.)
-- `z`: Zoom level (0-18)
-- `x`: Tile X coordinate
-- `y`: Tile Y coordinate
 
-**Example - Leaflet Integration:**
+**How it works:**
+
+**Example - Default (GET, no body):**
 ```javascript
-// Add flood hazard layer
+// Add flood hazard layer (default bounds)
 const floodHazardLayer = L.tileLayer(
   'https://your-api.com/api/v1/gee/flood/tiles/flood_hazard/{z}/{x}/{y}',
   {
@@ -109,49 +109,100 @@ const floodHazardLayer = L.tileLayer(
     opacity: 0.7
   }
 ).addTo(map);
-
-// Add permanent water layer
-const waterLayer = L.tileLayer(
-  'https://your-api.com/api/v1/gee/flood/tiles/permanent_water/{z}/{x}/{y}',
-  {
-    attribution: 'Sentinel-1 GRD | Copernicus',
-    maxZoom: 18
-  }
-).addTo(map);
-
-// Add 2023 flood layer
-const flood2023 = L.tileLayer(
-  'https://your-api.com/api/v1/gee/flood/tiles/flood_2023/{z}/{x}/{y}',
-  {
-    attribution: 'Sentinel-1 GRD | Copernicus',
-    maxZoom: 18
-  }
-);
-
-// Layer control
-const overlays = {
-  "Flood Hazard": floodHazardLayer,
-  "Permanent Water": waterLayer,
-  "Flood 2023": flood2023
-};
-L.control.layers(null, overlays).addTo(map);
 ```
 
-**Example - OpenLayers Integration:**
+
+### Integrasi Session Boundary (Per User) & React-Leaflet
+
+> **Fitur:**
+> Backend mendukung penyimpanan boundary (bbox) hasil upload GeoJSON ke dalam session user. Setelah boundary di-set, semua permintaan tile (GET) dari user tersebut otomatis terklip sesuai boundary yang sudah di-set, tanpa perlu POST geometry di setiap request tile.
+>
+> **Langkah penggunaan:**
+> 1. Setelah upload GeoJSON di frontend, kirim geometry ke backend:
+>
+>    ```http
+>    POST /api/v1/gee/flood/bbox/set
+>    Content-Type: application/json
+>
+>    {
+>      "geometry": {
+>        "type": "Polygon",
+>        "coordinates": [
+>          [ [106.8, -6.2], [106.9, -6.2], [106.9, -6.1], [106.8, -6.1], [106.8, -6.2] ]
+>        ]
+>      }
+>    }
+>    ```
+>
+>    Backend akan menyimpan bbox di session user (berbasis cookie/session id).
+>
+> 2. Selanjutnya, gunakan GET pada TileLayer React-Leaflet seperti biasa:
+>
+>    ```javascript
+>    <TileLayer url="https://your-api.com/api/v1/gee/flood/tiles/flood_hazard/{z}/{x}/{y}" ... />
+>    ```
+>
+>    Tile yang dihasilkan otomatis terklip sesuai boundary yang sudah di-set user tersebut.
+>
+> 3. Untuk reset ke boundary default Indonesia, gunakan endpoint:
+>
+>    ```http
+>    POST /api/v1/gee/flood/bbox/reset
+>    ```
+>
+> **Catatan:**
+> - Session boundary hanya berlaku untuk user/session yang melakukan set. Tidak mempengaruhi user lain.
+> - Jika POST geometry pada endpoint tile, itu tetap akan meng-override session untuk request tersebut.
+> - Pastikan browser mengirim cookie session (default jika tidak diubah).
+
+> **Troubleshooting:**
+> Jika muncul error seperti:
+>
+> `SessionMiddleware must be installed to access request.session`
+>
+> Artinya backend Anda belum mengaktifkan SessionMiddleware. Tambahkan middleware berikut pada FastAPI Anda sebelum router tile flood:
+>
+> ```python
+> from starlette.middleware.sessions import SessionMiddleware
+> app.add_middleware(SessionMiddleware, secret_key="your-secret-key")
+> ```
+>
+> Restart backend setelah menambah/memperbaiki middleware. Setelah aktif, tile flood akan bisa membaca boundary dari session user dan error 500 akan hilang.
+**Example - Custom Geometry (POST):**
 ```javascript
-// Flood hazard layer
+// Request a tile clipped to a custom polygon
+fetch('https://your-api.com/api/v1/gee/flood/tiles/flood_hazard/10/123/456', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [ [106.8, -6.2], [106.9, -6.2], [106.9, -6.1], [106.8, -6.1], [106.8, -6.2] ]
+      ]
+    }
+  })
+})
+// The response will be a redirect to the tile image, clipped to the provided geometry
+```
+
+**Example - OpenLayers Integration (default bounds):**
+```javascript
 const floodHazardSource = new ol.source.XYZ({
   url: 'https://your-api.com/api/v1/gee/flood/tiles/flood_hazard/{z}/{x}/{y}',
   crossOrigin: 'anonymous'
 });
-
 const floodHazardLayer = new ol.layer.Tile({
   source: floodHazardSource,
   opacity: 0.7
 });
-
 map.addLayer(floodHazardLayer);
 ```
+
+**Note:**
+- The `geometry` parameter must be a valid GeoJSON geometry (Polygon, MultiPolygon, etc.).
+- If `geometry` is omitted, the default boundary is used.
+- This feature allows per-request custom clipping for advanced use cases.
 
 ### 3. Get Dataset Information
 
@@ -213,26 +264,22 @@ Analyze flood statistics for a specific area using GeoJSON geometry.
       ]
     ]
   },
-  "years": [2020, 2021, 2022, 2023]
+  "years": [2021, 2022, 2023, 2024, 2025]
 }
 ```
 
 **Parameters:**
 - `geojson`: GeoJSON geometry (Polygon, MultiPolygon, or FeatureCollection)
-- `years`: Optional list of years to analyze (default: 2016-2023)
+- `years`: Optional list of years to analyze (default: 2021–2025)
 
 **Response:**
 ```json
 {
   "status": "success",
-  "analysis_period": "2020-2023",
+  "analysis_period": "2021-2025",
   "total_area_hectares": 1234.56,
   "flood_hazard_index": 0.45,
   "yearly_statistics": [
-    {
-      "year": 2020,
-      "flood_area_hectares": 123.45
-    },
     {
       "year": 2021,
       "flood_area_hectares": 234.56
@@ -244,13 +291,21 @@ Analyze flood statistics for a specific area using GeoJSON geometry.
     {
       "year": 2023,
       "flood_area_hectares": 189.12
+    },
+    {
+      "year": 2024,
+      "flood_area_hectares": 200.00
+    },
+    {
+      "year": 2025,
+      "flood_area_hectares": 210.00
     }
   ],
   "summary": {
-    "total_years_analyzed": 4,
-    "avg_flood_area_hectares": 175.98,
-    "max_flood_year": 2021,
-    "min_flood_year": 2020
+    "total_years_analyzed": 5,
+    "avg_flood_area_hectares": 198.07,
+    "max_flood_year": 2025,
+    "min_flood_year": 2021
   },
   "metadata": {
     "data_source": "Sentinel-1 GRD",
@@ -285,7 +340,7 @@ response = requests.post(
     'https://your-api.com/api/v1/gee/flood/analyze',
     json={
         'geojson': aoi,
-        'years': [2020, 2021, 2022, 2023]
+        'years': [2021, 2022, 2023, 2024, 2025]
     }
 )
 
@@ -316,7 +371,7 @@ fetch('https://your-api.com/api/v1/gee/flood/analyze', {
   },
   body: JSON.stringify({
     geojson: aoi,
-    years: [2020, 2021, 2022, 2023]
+    years: [2021, 2022, 2023, 2024, 2025]
   })
 })
 .then(response => response.json())
@@ -373,19 +428,37 @@ fetch('https://your-api.com/api/v1/gee/flood/analyze', {
       }
     );
     
-    // Flood 2023
+    // Flood 2025
+    const flood2025 = L.tileLayer(
+      'https://your-api.com/api/v1/gee/flood/tiles/flood_2025/{z}/{x}/{y}',
+      { attribution: 'Sentinel-1 | Copernicus' }
+    );
+    const flood2024 = L.tileLayer(
+      'https://your-api.com/api/v1/gee/flood/tiles/flood_2024/{z}/{x}/{y}',
+      { attribution: 'Sentinel-1 | Copernicus' }
+    );
     const flood2023 = L.tileLayer(
       'https://your-api.com/api/v1/gee/flood/tiles/flood_2023/{z}/{x}/{y}',
-      {
-        attribution: 'Sentinel-1 | Copernicus'
-      }
+      { attribution: 'Sentinel-1 | Copernicus' }
+    );
+    const flood2022 = L.tileLayer(
+      'https://your-api.com/api/v1/gee/flood/tiles/flood_2022/{z}/{x}/{y}',
+      { attribution: 'Sentinel-1 | Copernicus' }
+    );
+    const flood2021 = L.tileLayer(
+      'https://your-api.com/api/v1/gee/flood/tiles/flood_2021/{z}/{x}/{y}',
+      { attribution: 'Sentinel-1 | Copernicus' }
     );
     
     // Layer control
     const overlays = {
       "Flood Hazard Index": floodHazard,
       "Permanent Water": permanentWater,
-      "Flood 2023": flood2023
+      "Flood 2025": flood2025,
+      "Flood 2024": flood2024,
+      "Flood 2023": flood2023,
+      "Flood 2022": flood2022,
+      "Flood 2021": flood2021
     };
     L.control.layers(null, overlays).addTo(map);
     
@@ -498,7 +571,7 @@ Higher values (e.g., -12 dB) = less sensitive (detects less water)
 
 ## Limitations
 
-- **Temporal**: Limited to 2016-2023 data
+- **Temporal**: Limited to 2021–2025 data
 - **Season**: Fixed wet/dry season dates (customizable)
 - **Resolution**: ~10m Sentinel-1 resolution
 - **Cloud Coverage**: Radar-based, not affected by clouds

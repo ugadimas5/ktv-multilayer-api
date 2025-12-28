@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Flood Filter API</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; display: flex; height: 100vh; font-family: sans-serif; }
+        #sidebar { width: 300px; padding: 20px; background: #f0f0f0; border-right: 1px solid #ccc; display: flex; flex-direction: column; gap: 10px; }
+        #map { flex: 1; }
+        input, select, button { padding: 8px; width: 100%; box-sizing: border-box; }
+        label { font-weight: bold; font-size: 0.9em; margin-top: 10px; display: block; }
+        .note { font-size: 0.8em; color: #666; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Flood Filter Test</h2>
+    <p class="note">Test the API with GAUL 2024 filters.</p>
+
+    <label>Dataset:</label>
+    <select id="dataset">
+        <optgroup label="Flood Analysis">
+            <option value="flood_hazard">Flood Hazard Index</option>
+            <option value="permanent_water">Permanent Water</option>
+            <option value="flood_2024">Flood 2024</option>
+            <option value="flood_2023">Flood 2023</option>
+        </optgroup>
+        <optgroup label="Landslide Analysis">
+            <option value="landslide_nov_dec_2025">Landslide Nov-Dec 2025 (SAR)</option>
+            <option value="landslide_ndvi_nov_dec_2025">Landslide Nov-Dec 2025 (NDVI)</option>
+        </optgroup>
+        <optgroup label="Commodity Analysis">
+            <option value="rubber">Rubber</option>
+            <option value="palm">Palm Oil</option>
+            <option value="cocoa">Cocoa</option>
+            <option value="coffee">Coffee</option>
+        </optgroup>
+    </select>
+
+    <label>Country (ADM0_NAME):</label>
+    <input type="text" id="country" value="Indonesia" placeholder="e.g. Indonesia">
+
+    <label>Province (ADM1_NAME):</label>
+    <input type="text" id="province" value="Aceh" placeholder="e.g. Aceh">
+
+    <label>District (ADM2_NAME):</label>
+    <input type="text" id="district" value="" placeholder="e.g. Aceh Barat (Optional)">
+
+    <button onclick="loadLayer()">Load Layer</button>
+    <button onclick="getStats()">Get Area Stats</button>
+    <button onclick="clearLayers()" style="background: #ffcccc; margin-top: 5px;">Clear Layers</button>
+
+    <div id="status" style="margin-top: 20px; font-size: 0.9em;"></div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // Initialize map centered on Indonesia
+    const map = L.map('map').setView([-0.7893, 113.9213], 5);
+
+    // Add base layer
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    let currentLayer = null;
+
+    function loadLayer() {
+        const dataset = document.getElementById('dataset').value;
+        const country = document.getElementById('country').value;
+        const province = document.getElementById('province').value;
+        const district = document.getElementById('district').value;
+
+        // Build query parameters
+        const params = new URLSearchParams();
+        if (country) params.append('country', country);
+        if (province) params.append('province', province);
+        if (district) params.append('district', district);
+
+        // Determine API path based on dataset
+        let apiPath = 'gee/flood/tiles';
+        if (dataset.startsWith('landslide_')) {
+            apiPath = 'gee/landslide/tiles';
+        } else if (['rubber', 'palm', 'cocoa', 'coffee'].includes(dataset)) {
+            apiPath = 'gee/commodity/tiles';
+        }
+
+        // Construct Tile URL
+        // Assuming API is running on localhost:8000
+        const baseUrl = 'http://localhost:8000'; 
+        const tileUrl = `${baseUrl}/api/v1/${apiPath}/${dataset}/{z}/{x}/{y}?${params.toString()}`;
+
+        document.getElementById('status').innerText = `Loading: ${dataset}...\nURL: ${tileUrl}`;
+
+        // Remove previous layer
+        if (currentLayer) {
+            map.removeLayer(currentLayer);
+        }
+
+        // Add new tile layer
+        currentLayer = L.tileLayer(tileUrl, {
+            maxZoom: 18,
+            attribution: 'Google Earth Engine'
+        });
+
+        currentLayer.addTo(map);
+
+        currentLayer.on('tileload', function() {
+            document.getElementById('status').innerText = `Layer Loaded: ${dataset}`;
+        });
+
+        currentLayer.on('tileerror', function(e) {
+            console.error('Tile error:', e);
+            document.getElementById('status').innerText = `Error loading tiles. Check console/network.`;
+        });
+    }
+
+    function clearLayers() {
+        if (currentLayer) {
+            map.removeLayer(currentLayer);
+            currentLayer = null;
+            document.getElementById('status').innerText = 'Layer cleared.';
+        }
+    }
+
+    async function getStats() {
+        const dataset = document.getElementById('dataset').value;
+        const country = document.getElementById('country').value;
+        const province = document.getElementById('province').value;
+        const district = document.getElementById('district').value;
+
+        const params = new URLSearchParams();
+        if (country) params.append('country', country);
+        if (province) params.append('province', province);
+        if (district) params.append('district', district);
+
+        let apiPath = 'gee/flood/stats';
+        let paramName = 'dataset';
+        
+        if (dataset.startsWith('landslide_')) {
+            apiPath = 'gee/landslide/stats';
+        } else if (['rubber', 'palm', 'cocoa', 'coffee'].includes(dataset)) {
+            apiPath = 'gee/commodity/stats';
+            paramName = 'commodity';
+        }
+        
+        params.append(paramName, dataset);
+
+        const baseUrl = 'http://localhost:8000';
+        const url = `${baseUrl}/api/v1/${apiPath}?${params.toString()}`;
+        
+        document.getElementById('status').innerText = `Fetching stats...`;
+        
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            document.getElementById('status').innerText = JSON.stringify(data, null, 2);
+        } catch (e) {
+            document.getElementById('status').innerText = `Error: ${e}`;
+        }
+    }
+</script>
+
+</body>
+</html>
