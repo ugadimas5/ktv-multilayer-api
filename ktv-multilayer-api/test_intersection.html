@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Intersection API</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; display: flex; height: 100vh; font-family: sans-serif; }
+        #sidebar { width: 300px; padding: 20px; background: #f0f0f0; border-right: 1px solid #ccc; display: flex; flex-direction: column; gap: 10px; }
+        #map { flex: 1; }
+        input, select, button { padding: 8px; width: 100%; box-sizing: border-box; }
+        label { font-weight: bold; font-size: 0.9em; margin-top: 10px; display: block; }
+        .note { font-size: 0.8em; color: #666; margin-bottom: 10px; }
+        pre { white-space: pre-wrap; font-size: 0.8em; background: #fff; padding: 5px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Intersection Test</h2>
+    <p class="note">Test Intersection Analysis.</p>
+
+    <label>Intersection Type:</label>
+    <select id="type">
+        <option value="commodity_flood">Commodity + Flood Hazard</option>
+        <option value="commodity_landslide">Commodity + Landslide</option>
+        <option value="commodity_flood_landslide">Commodity + Flood + Landslide</option>
+    </select>
+
+    <label>Commodity:</label>
+    <select id="commodity">
+        <option value="rubber">Rubber</option>
+        <option value="palm">Palm Oil</option>
+        <option value="cocoa">Cocoa</option>
+        <option value="coffee">Coffee</option>
+    </select>
+
+    <label>Country (ADM0_NAME):</label>
+    <input type="text" id="country" value="Indonesia" placeholder="e.g. Indonesia">
+
+    <label>Province (ADM1_NAME):</label>
+    <input type="text" id="province" value="Aceh" placeholder="e.g. Aceh">
+
+    <label>District (ADM2_NAME):</label>
+    <input type="text" id="district" value="" placeholder="e.g. Aceh Barat (Optional)">
+
+    <button onclick="loadLayer()">Load Layer</button>
+    <button onclick="getStats()">Get Area Stats</button>
+    <button onclick="clearLayers()" style="background: #ffcccc; margin-top: 5px;">Clear Layers</button>
+
+    <div id="status" style="margin-top: 20px; font-size: 0.9em;"></div>
+    <pre id="result"></pre>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    const map = L.map('map').setView([-0.7893, 113.9213], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    let currentLayer = null;
+    const baseUrl = 'http://localhost:8000';
+
+    function loadLayer() {
+        const type = document.getElementById('type').value;
+        const commodity = document.getElementById('commodity').value;
+        const country = document.getElementById('country').value;
+        const province = document.getElementById('province').value;
+        const district = document.getElementById('district').value;
+
+        const params = new URLSearchParams();
+        if (country) params.append('country', country);
+        if (province) params.append('province', province);
+        if (district) params.append('district', district);
+
+        const tileUrl = `${baseUrl}/api/v1/gee/intersection/tiles/${type}/${commodity}/{z}/{x}/{y}?${params.toString()}`;
+
+        document.getElementById('status').innerText = `Loading: ${type} (${commodity})...`;
+        document.getElementById('result').innerText = '';
+
+        if (currentLayer) map.removeLayer(currentLayer);
+
+        currentLayer = L.tileLayer(tileUrl, {
+            maxZoom: 18,
+            attribution: 'GEE Analysis'
+        });
+        
+        currentLayer.on('tileload', () => {
+            document.getElementById('status').innerText = 'Layer Loaded';
+        });
+        
+        currentLayer.on('tileerror', (e) => {
+            console.error(e);
+            document.getElementById('status').innerText = 'Error loading tiles (Check console/network)';
+        });
+
+        currentLayer.addTo(map);
+    }
+
+    async function getStats() {
+        const type = document.getElementById('type').value;
+        const commodity = document.getElementById('commodity').value;
+        const country = document.getElementById('country').value;
+        const province = document.getElementById('province').value;
+        const district = document.getElementById('district').value;
+
+        const params = new URLSearchParams();
+        params.append('type', type);
+        params.append('commodity', commodity);
+        if (country) params.append('country', country);
+        if (province) params.append('province', province);
+        if (district) params.append('district', district);
+
+        const url = `${baseUrl}/api/v1/gee/intersection/stats?${params.toString()}`;
+        
+        document.getElementById('status').innerText = 'Calculating stats...';
+        document.getElementById('result').innerText = 'Waiting...';
+
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            document.getElementById('status').innerText = 'Stats Calculated';
+            document.getElementById('result').innerText = JSON.stringify(data, null, 2);
+        } catch (e) {
+            document.getElementById('status').innerText = 'Error calculating stats';
+            document.getElementById('result').innerText = e.toString();
+        }
+    }
+
+    function clearLayers() {
+        if (currentLayer) map.removeLayer(currentLayer);
+        currentLayer = null;
+        document.getElementById('status').innerText = 'Layers cleared';
+        document.getElementById('result').innerText = '';
+    }
+</script>
+</body>
+</html>

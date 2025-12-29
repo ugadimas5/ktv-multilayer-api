@@ -28,6 +28,7 @@ from routers.commodity_analysis import router as commodity_analysis_router
 from routers.gaul import router as gaul_router
 from routers.gaul_csv import router as gaul_csv_router
 from routers.protected_area import router as protected_area_router
+from routers.intersection import router as intersection_router
 
 # Create FastAPI application
 app = FastAPI(
@@ -134,6 +135,7 @@ app.include_router(commodity_analysis_router)
 app.include_router(gaul_router)
 app.include_router(gaul_csv_router)
 app.include_router(protected_area_router)
+app.include_router(intersection_router)
 
 # Legacy endpoints for backward compatibility
 from routers.legacy import router as legacy_router

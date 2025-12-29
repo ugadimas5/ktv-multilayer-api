@@ -1,6 +1,6 @@
 # services/gee_landslide_service.py
 from loguru import logger
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from fastapi import HTTPException
 from fastapi.responses import RedirectResponse
 import ee

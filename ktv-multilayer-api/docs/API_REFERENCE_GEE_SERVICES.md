@@ -36,6 +36,7 @@ Retrieves a visualization tile (XYZ format) for flood datasets.
 **Available Datasets:**
 - `flood_hazard`: Composite flood hazard index (0-1).
 - `permanent_water`: Detected permanent water bodies.
+- `flood_nov_dec_2025`: Flood detection for Nov-Dec 2025 (vs Baseline Aug-Oct 2025).
 - `flood_2024`: Flood extent for year 2024.
 - `flood_2023`: Flood extent for year 2023.
 
@@ -179,6 +180,59 @@ Calculates the total area of the specified commodity plantation within a boundar
   "scale_used": 10,
   "area_sqm": 1250000.00,
   "area_ha": 125.00
+}
+```
+
+---
+
+## 4. Intersection Analysis Service
+
+Provides intersection analysis between Commodity, Flood, and Landslide datasets.
+
+### 4.1 Get Intersection Map Tile
+Retrieves a visualization tile for the intersection.
+
+**Endpoint:**
+`GET /api/v1/gee/intersection/tiles/{type}/{commodity}/{z}/{x}/{y}`
+
+**Path Parameters:**
+- `type`: Intersection type.
+    - `commodity_flood`: Commodity AND Flood Hazard (>0.1). (Color: Purple)
+    - `commodity_landslide`: Commodity AND Landslide (Nov-Dec 2025). (Color: Red)
+    - `commodity_flood_landslide`: Commodity AND Flood AND Landslide. (Color: Black)
+- `commodity`: Commodity name (`rubber`, `palm`, `cocoa`, `coffee`).
+- `z`, `x`, `y`: Zoom level and tile coordinates.
+
+**Query Parameters:**
+- `country`, `province`, `district`: (Optional) Filter by location.
+
+**Response:**
+- **307 Temporary Redirect**: Redirects to the Google Earth Engine tile URL.
+
+### 4.2 Get Intersection Area Statistics
+Calculates the total area of the intersection.
+
+**Endpoint:**
+`GET /api/v1/gee/intersection/stats`
+
+**Query Parameters:**
+- `type`: (Required) Intersection type.
+- `commodity`: (Required) Commodity name.
+- `country`, `province`, `district`: (Optional) Filter by location.
+
+**Response (JSON):**
+```json
+{
+  "analysis_type": "commodity_flood",
+  "commodity": "rubber",
+  "location": {
+    "country": "Indonesia",
+    "province": "Aceh",
+    "district": null
+  },
+  "scale_used": 30,
+  "area_sqm": 5000.00,
+  "area_ha": 0.50
 }
 ```
 

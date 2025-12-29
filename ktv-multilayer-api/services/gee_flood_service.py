@@ -74,6 +74,13 @@ class GEEFloodService:
                     'style': 'permanent_water',
                     'years': [2021, 2022, 2023, 2024, 2025]
                 },
+                'flood_nov_dec_2025': {
+                    'name': 'Flood Nov-Dec 2025',
+                    'description': 'Flood detection for Nov-Dec 2025 vs Baseline (Aug-Oct 2025)',
+                    'type': 'binary',
+                    'style': 'flood_binary',
+                    'year': 2025
+                },
                 'flood_2025': {
                     'name': 'Flood 2025',
                     'description': 'Flood areas detected in 2025',
@@ -170,6 +177,60 @@ class GEEFloodService:
         """Get Sentinel-1 image collection"""
         return ee.ImageCollection('COPERNICUS/S1_GRD')
     
+    def _process_water_period(self, bounds: ee.Geometry, start_date: str, end_date: str) -> ee.Image:
+        """
+        Process water detection for a specific date range
+        
+        Args:
+            bounds: Area of interest geometry
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+        
+        Returns:
+            Water mask image
+        """
+        s1 = self._get_sentinel1_collection()
+        
+        # Filter collection
+        image = s1 \
+            .filterBounds(bounds) \
+            .filterDate(start_date, end_date) \
+            .filter(ee.Filter.eq('transmitterReceiverPolarisation', ['VV', 'VH'])) \
+            .select('VV')
+        
+        # Minimum composite with speckle filtering
+        # Apply focal mean BEFORE clipping to avoid edge effects
+        image_min = image.reduce(ee.Reducer.percentile([10])) \
+            .focalMean(50, 'square', 'meters') \
+            .clip(bounds)
+        
+        # Water mask (threshold -15 dB)
+        water = image_min.lt(-15).toByte().rename('water')
+        
+        return water
+
+    def generate_flood_event(self, bounds: ee.Geometry, baseline_start: str, baseline_end: str, analysis_start: str, analysis_end: str) -> ee.Image:
+        """
+        Generate flood detection for a specific event compared to a baseline
+        
+        Args:
+            bounds: Area of interest geometry
+            baseline_start: Baseline start date
+            baseline_end: Baseline end date
+            analysis_start: Analysis start date
+            analysis_end: Analysis end date
+            
+        Returns:
+            Flood mask image
+        """
+        water_baseline = self._process_water_period(bounds, baseline_start, baseline_end)
+        water_analysis = self._process_water_period(bounds, analysis_start, analysis_end)
+        
+        # Flood = water in analysis AND NOT water in baseline
+        flood = water_analysis.And(water_baseline.eq(0)).rename('flood').toByte()
+        
+        return flood.selfMask()
+
     def _process_seasonal_water(self, bounds: ee.Geometry, year: int, season_config: Dict) -> ee.Image:
         """
         Process seasonal water detection for a specific year and season
@@ -431,6 +492,12 @@ class GEEFloodService:
             image = self.generate_flood_hazard(bounds)
         elif dataset == 'permanent_water':
             image = self.generate_permanent_water(bounds)
+        elif dataset == 'flood_nov_dec_2025':
+            image = self.generate_flood_event(
+                bounds, 
+                '2025-08-01', '2025-10-31', # Baseline
+                '2025-11-01', '2025-12-31'  # Analysis
+            )
         elif dataset.startswith('flood_'):
             year = int(dataset.split('_')[1])
             image = self.generate_flood_for_year(bounds, year)
@@ -609,6 +676,13 @@ class GEEFloodService:
             elif dataset == 'permanent_water':
                 image = self.generate_permanent_water(bounds)
                 mask = image.select('water').gt(0)
+            elif dataset == 'flood_nov_dec_2025':
+                image = self.generate_flood_event(
+                    bounds, 
+                    '2025-08-01', '2025-10-31', 
+                    '2025-11-01', '2025-12-31'
+                )
+                mask = image.select('flood').gt(0)
             elif dataset.startswith('flood_'):
                 year = int(dataset.split('_')[1])
                 image = self.generate_flood_for_year(bounds, year)
