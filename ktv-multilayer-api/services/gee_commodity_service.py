@@ -62,7 +62,7 @@ class GEECommodityService:
             'coffee': {
                 'min': 1,
                 'max': 1,
-                'palette': ['#a6611a']  # Coffee Brown
+                'palette': ['#66c2a5']  # Coffee Green (Updated)
             }
         }
     

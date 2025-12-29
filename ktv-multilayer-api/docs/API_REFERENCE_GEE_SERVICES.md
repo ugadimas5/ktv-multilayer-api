@@ -153,7 +153,7 @@ Retrieves a visualization tile for commodity plantations.
 - `rubber`: Rubber plantations (Color: `#2c7bb6`)
 - `palm`: Palm oil plantations (Color: `#abdda4`)
 - `cocoa`: Cocoa plantations (Color: `#018571`)
-- `coffee`: Coffee plantations (Color: `#a6611a`)
+- `coffee`: Coffee plantations (Color: `#66c2a5`)
 
 **Response:**
 - **307 Temporary Redirect**: Redirects to the Google Earth Engine tile URL.
