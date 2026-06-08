@@ -88,11 +88,12 @@ class MultilayerService:
             'jrc_tmf': 'JRC TMF Deforestation Year 2021-2025'
         }
         
-        # Band names untuk simplified analysis (3 datasets only)
+        # Band names for the 30m mean-reduce (GFW/JRC/SBTN). RADD is handled
+        # separately at its native 10m resolution via _calculate_radd_stats().
         self.band_names = [
             'gfw_loss_combined', 'sbtn_loss_combined', 'jrc_loss_combined',
             'gfw_loss_2021', 'gfw_loss_2022', 'gfw_loss_2023', 'gfw_loss_2024',
-            'sbtn_loss_2021', 'sbtn_loss_2022', 'sbtn_loss_2023', 'sbtn_loss_2024', 
+            'sbtn_loss_2021', 'sbtn_loss_2022', 'sbtn_loss_2023', 'sbtn_loss_2024',
             'jrc_loss_2021', 'jrc_loss_2022', 'jrc_loss_2023', 'jrc_loss_2024'
         ]
         
@@ -167,17 +168,22 @@ class MultilayerService:
             logger.info("Earth Engine initialized with default authentication")
         except Exception as e:
             logger.warning(f"Earth Engine initialization failed: {str(e)}. API will use mock data.")
-    def zonal_stats_ee(self, geom_dict: Dict, img: ee.Image, band_names: List[str]) -> Dict[str, float]:
+    def zonal_stats_ee(self, geom_dict: Dict, img: ee.Image, band_names: List[str], reducer=None) -> Dict[str, float]:
         """
-        Perform zonal statistics using Earth Engine dengan thread-safe service account rotation
+        Perform zonal statistics using Earth Engine dengan thread-safe service account rotation.
+        reducer: opsional. Default ee.Reducer.mean() (perilaku asli untuk semua endpoint existing).
+        Endpoint count-based (mis. *-nobrwa) memakai ee.Reducer.sum() agar nilai = jumlah piksel.
         """
         try:
             # Ensure thread has proper EE session
             account = self._get_thread_ee_session()
-            
+
+            if reducer is None:
+                reducer = ee.Reducer.mean()
+
             aoi = ee.Geometry(geom_dict)
             stats = img.reduceRegion(
-                reducer=ee.Reducer.mean(),
+                reducer=reducer,
                 geometry=aoi,
                 scale=30,
                 maxPixels=1e13,
@@ -255,14 +261,40 @@ class MultilayerService:
             # JRC combined loss
             jrc_combined = tmf_def.gte(2021).And(tmf_def.lte(2024))
             jrc_combined = jrc_combined.updateMask(eufo_mask).rename('jrc_loss_combined')
-            
-            # Build final image dengan 3 dataset saja
-            img = gfw_combined.addBands(sbtn_combined).addBands(jrc_combined)
-            
+
+            # 5. RADD - Radar near real-time forest disturbance alerts (2021-2024)
+            # Source: projects/radar-wur/raddalert/v1 (Wageningen University).
+            # 'Alert' band: 2 = unconfirmed, 3 = confirmed (>=2 counts as disturbance).
+            # 'Date' band: YYDDD format (e.g. 21074 = 2021, day-of-year 074).
+            radd_alert_img = (ee.ImageCollection("projects/radar-wur/raddalert/v1")
+                              .filterMetadata("layer", "contains", "alert")
+                              .sort("system:time_end")
+                              .mosaic())
+            radd_any = radd_alert_img.select("Alert").gte(2)
+            radd_date = radd_alert_img.select("Date")
+
+            radd_loss_bands = []
+            for year in range(2021, 2025):
+                yy = year - 2000
+                radd_loss_year = (radd_any
+                                  .And(radd_date.gte(yy * 1000)).And(radd_date.lt((yy + 1) * 1000))
+                                  .unmask(0)
+                                  .rename(f'radd_loss_{year}'))
+                radd_loss_bands.append(radd_loss_year)
+
+            # RADD combined alerts 2021-2024
+            radd_combined = (radd_any
+                             .And(radd_date.gte(21000)).And(radd_date.lt(25000))
+                             .unmask(0)
+                             .rename('radd_loss_combined'))
+
+            # Build final image: GFW, SBTN, JRC loss + RADD alerts
+            img = gfw_combined.addBands(sbtn_combined).addBands(jrc_combined).addBands(radd_combined)
+
             # Tambahkan band per tahun
-            for band in gfw_loss_bands + sbtn_loss_bands + jrc_loss_bands:
+            for band in gfw_loss_bands + sbtn_loss_bands + jrc_loss_bands + radd_loss_bands:
                 img = img.addBands(band)
-            
+
             return img
             
         except Exception as e:
@@ -317,7 +349,7 @@ class MultilayerService:
             # Return mock data for API reliability
             return self._get_mock_simplified_results(coordinates, buffer_km)
     
-    def _calculate_loss_stats(self, stats: Dict[str, float], total_area_hectares: float, 
+    def _calculate_loss_stats(self, stats: Dict[str, float], total_area_hectares: float,
                              dataset_prefix: str, years: List[int]) -> Dict[str, Any]:
         """
         Hitung statistik loss untuk dataset tertentu dengan binary classification
@@ -327,7 +359,7 @@ class MultilayerService:
             # Hitung area loss combined
             combined_band = f'{dataset_prefix}_combined'
             combined_value = stats.get(combined_band, 0)
-            
+
             # Convert pixels to hectares (30m resolution = 900 sqm per pixel)
             loss_area_hectares = (combined_value * 900) / 10000
             loss_percentage = (loss_area_hectares / total_area_hectares * 100) if total_area_hectares > 0 else 0
@@ -376,7 +408,7 @@ class MultilayerService:
                 'dataset': f'{dataset_prefix.upper()} Loss Detection (2021-2024)'
             }
         
-    def _calculate_loss_stats_notrounded(self, stats: Dict[str, float], total_area_hectares: float, 
+    def _calculate_loss_stats_notrounded(self, stats: Dict[str, float], total_area_hectares: float,
                              dataset_prefix: str, years: List[int]) -> Dict[str, Any]:
         """
         Same as _calculate_loss_stats but does NOT round area/percent values.
@@ -420,24 +452,92 @@ class MultilayerService:
                 f'{dataset_prefix}_year_compilation': None,
                 'dataset': f'{dataset_prefix.upper()} Loss Detection (2021-2024)'
             }
-     
-    def _determine_simplified_compliance(self, gfw_analysis: Dict, jrc_analysis: Dict, 
-                                       sbtn_analysis: Dict) -> Dict[str, Any]:
+
+    def _calculate_radd_stats(self, geometry: Dict[str, Any], ee_image,
+                              total_area_hectares: float, years: List[int],
+                              round_values: bool = True) -> Dict[str, Any]:
         """
-        Determine overall compliance status berdasarkan 3 dataset dengan binary logic
-        Logic: Jika salah satu dataset menunjukkan 'high' risk, maka overall = 'high'
+        Hitung statistik RADD alert sebagai JUMLAH PIKSEL 10m (Sentinel-1), terpisah
+        dari dataset 30m. RADD di-reduce dengan ee.Reducer.sum() pada scale=10 sehingga
+        nilainya adalah COUNT piksel alert, lalu dikalikan 100 m^2/piksel (10m x 10m).
+        Ini memberi luas RADD yang akurat pada resolusi nativnya TANPA mengubah
+        perhitungan GFW/JRC/SBTN (yang tetap mean @ scale=30, 900 m^2/piksel).
         """
-        
+        try:
+            account = self._get_thread_ee_session()
+            aoi = ee.Geometry(geometry)
+            radd_bands = ['radd_loss_combined'] + [f'radd_loss_{y}' for y in years]
+
+            counts = ee_image.select(radd_bands).reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=aoi,
+                scale=10,            # RADD native resolution (Sentinel-1 = 10m)
+                maxPixels=1e13,
+                bestEffort=True
+            ).getInfo()
+
+            def _count(band):
+                v = counts.get(band, 0)
+                return 0.0 if v is None else float(v)
+
+            combined_count = _count('radd_loss_combined')
+
+            # 10m pixel = 100 m^2 -> hectares
+            loss_area_hectares = (combined_count * 100) / 10000
+            loss_percentage = (loss_area_hectares / total_area_hectares * 100) if total_area_hectares > 0 else 0
+
+            risk_stat = "high" if loss_area_hectares > 0 else "low"
+
+            if loss_area_hectares <= 0:
+                year_compilation = None
+            else:
+                year_counts = {y: _count(f'radd_loss_{y}') for y in years}
+                years_with_alerts = [y for y, c in year_counts.items() if c > 0]
+                year_compilation = (max(years_with_alerts, key=lambda k: year_counts[k])
+                                    if years_with_alerts else None)
+
+            if round_values:
+                loss_area_hectares = round(loss_area_hectares, 2)
+                loss_percentage = round(loss_percentage, 2)
+
+            logger.debug(f"RADD stats via 10m pixel count using account: {account}")
+            return {
+                'radd_loss_stat': risk_stat,
+                'radd_loss_percent': loss_percentage,
+                'radd_loss_area': loss_area_hectares,
+                'radd_loss_year_compilation': year_compilation,
+                'dataset': 'RADD Forest Disturbance Alerts (2021-2024, 10m Sentinel-1)'
+            }
+        except Exception as e:
+            logger.error(f"Error calculating RADD stats: {str(e)}")
+            return {
+                'radd_loss_stat': "low",
+                'radd_loss_percent': 0,
+                'radd_loss_area': 0,
+                'radd_loss_year_compilation': None,
+                'dataset': 'RADD Forest Disturbance Alerts (2021-2024, 10m Sentinel-1)'
+            }
+
+    def _determine_simplified_compliance(self, gfw_analysis: Dict, jrc_analysis: Dict,
+                                       sbtn_analysis: Dict, radd_analysis: Dict = None) -> Dict[str, Any]:
+        """
+        Determine overall compliance status berdasarkan dataset dengan binary logic
+        Logic: Jika salah satu dataset menunjukkan 'high' risk, maka overall = 'high'.
+        RADD alerts (radd_analysis) bersifat opsional agar analisis berbasis titik tetap kompatibel.
+        """
+
         # Collect high risk indicators
         high_risk_datasets = []
-        
+
         if gfw_analysis['gfw_loss_stat'] == 'high':
             high_risk_datasets.append('GFW Forest Loss')
         if jrc_analysis['jrc_loss_stat'] == 'high':
             high_risk_datasets.append('JRC Forest Loss')
         if sbtn_analysis['sbtn_loss_stat'] == 'high':
             high_risk_datasets.append('SBTN Natural Lands Loss')
-        
+        if radd_analysis and radd_analysis.get('radd_loss_stat') == 'high':
+            high_risk_datasets.append('RADD Forest Disturbance Alerts')
+
         # Overall determination - binary
         if high_risk_datasets:
             overall_status = 'high'
@@ -500,23 +600,23 @@ class MultilayerService:
             properties = feature.get('properties', {})
             plot_id = properties.get('plot_id', 'unknown')
             country_name = properties.get('country_name', 'unknown')
-            
+
             # Convert ke EE geometry
             ee_geometry = ee.Geometry(geometry)
-            
+
             # Calculate total area
             total_area_hectares = ee_geometry.area().getInfo() / 10000
-            
+
             # Hitung statistik untuk setiap dataset
             result = {
                 'plot_id': plot_id,
                 'country_name': country_name,
                 'total_area_hectares': round(total_area_hectares, 2)
             }
-            
+
             # Perform zonal statistics (akan menggunakan thread-specific account)
             stats = self.zonal_stats_ee(geometry, ee_image, self.band_names)
-            
+
             if notrounded:
                 # 1. GFW Loss statistics (notrounded)
                 gfw_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'gfw_loss', [2021, 2022, 2023, 2024])
@@ -540,7 +640,7 @@ class MultilayerService:
             # Overall compliance
             overall_compliance = self._determine_simplified_compliance(gfw_stats, jrc_stats, sbtn_stats)
             result['overall_compliance'] = overall_compliance
-            
+
             # Keep geometry
             result['geometry'] = geometry
 
@@ -548,13 +648,72 @@ class MultilayerService:
             brwa_result = self.analyze_brwa_overlap(geometry)
             result['brwa_status'] = brwa_result.get('brwa_status')
             result['brwa_area_overlap'] = brwa_result.get('brwa_area_overlap')
-            
+
             logger.debug(f"Processed feature {plot_id} successfully")
             return result
             
         except Exception as e:
             logger.error(f"Error processing feature {plot_id}: {str(e)}")
             # Return error result
+            return {
+                'plot_id': plot_id,
+                'error': str(e),
+                'geometry': geometry
+            }
+
+    def _process_feature_radd_nobrwa(self, feature: Dict[str, Any], ee_image) -> Dict[str, Any]:
+        """
+        Variant khusus untuk endpoint /upload-geojson-notrounded-nobrwa.
+        Terpisah penuh dari _process_single_feature (yang tetap apa adanya untuk endpoint lain):
+          - GFW/JRC/SBTN (30m): berbasis JUMLAH PIKSEL -> reduce ee.Reducer.sum(),
+            lalu count * 900 m^2 / 10000 (via _calculate_loss_stats_notrounded).
+          - RADD: count piksel 10m (Sentinel-1) * 100 m^2 (via _calculate_radd_stats).
+          - TANPA analisis overlap BRWA (tidak menyentuh PostGIS).
+        Semua nilai tidak dibulatkan (notrounded).
+        """
+        try:
+            geometry = feature['geometry']
+            properties = feature.get('properties', {})
+            # File sumber memakai key 'plot' & 'country'; dukung juga 'plot_id'/'country_name'
+            plot_id = properties.get('plot_id') or properties.get('plot') or 'unknown'
+            country_name = properties.get('country_name') or properties.get('country') or 'unknown'
+
+            ee_geometry = ee.Geometry(geometry)
+            total_area_hectares = ee_geometry.area().getInfo() / 10000
+
+            result = {
+                'plot_id': plot_id,
+                'country_name': country_name,
+                'total_area_hectares': round(total_area_hectares, 2)
+            }
+
+            years = [2021, 2022, 2023, 2024]
+
+            # Statistik 30m berbasis jumlah piksel (sum) -> count * 900 m^2
+            stats = self.zonal_stats_ee(geometry, ee_image, self.band_names, reducer=ee.Reducer.sum())
+            gfw_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'gfw_loss', years)
+            result['gfw_loss'] = gfw_stats
+            jrc_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'jrc_loss', years)
+            result['jrc_loss'] = jrc_stats
+            sbtn_stats = self._calculate_loss_stats_notrounded(stats, total_area_hectares, 'sbtn_loss', years)
+            result['sbtn_loss'] = sbtn_stats
+
+            # RADD: jumlah piksel 10m (Sentinel-1) * 100 m^2
+            radd_stats = self._calculate_radd_stats(geometry, ee_image, total_area_hectares, years, round_values=False)
+            result['radd_loss'] = radd_stats
+
+            # Overall compliance termasuk RADD
+            result['overall_compliance'] = self._determine_simplified_compliance(
+                gfw_stats, jrc_stats, sbtn_stats, radd_stats)
+
+            # Keep geometry (TANPA BRWA)
+            result['geometry'] = geometry
+
+            logger.debug(f"Processed feature {plot_id} (RADD, no BRWA) successfully")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error processing feature {plot_id} (RADD, no BRWA): {str(e)}")
             return {
                 'plot_id': plot_id,
                 'error': str(e),

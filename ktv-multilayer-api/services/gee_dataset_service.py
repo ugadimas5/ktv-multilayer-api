@@ -76,21 +76,21 @@ class GEEDatasetService:
         
         logger.info("Pre-generating Map IDs for common datasets...")
         
-        datasets = ["gfw", "gfw_loss", "jrc", "jrc_loss", "sbtn", "sbtn_loss"]
+        datasets = ["gfw", "gfw_loss", "jrc", "jrc_loss", "sbtn", "sbtn_loss", "radd"]
         styles = ["default"]
-        
+
         for dataset in datasets:
             for style in styles:
                 try:
                     cache_key = self._generate_map_id_cache_key(dataset, style)
-                    
+
                     if cache_key not in self.map_id_cache:
                         band_name = self.get_available_datasets()["datasets"][dataset]["band"]
                         vis_params = self._get_visualization_params(dataset, style)
-                        
+
                         image_band = self.ee_image.select(band_name)
-                        
-                        if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss"]:
+
+                        if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss", "radd"]:
                             image_band = image_band.updateMask(image_band.gt(0))
                         
                         map_id = image_band.getMapId(vis_params)
@@ -237,14 +237,18 @@ class GEEDatasetService:
             # 13. JRC Loss (2021-2024) - JRC TMF Deforestation
             jrc_loss = self._get_jrc_tmf_deforestation().rename("jrc_loss")
 
-            # Combine all 6 datasets
+            # 14. RADD - Radar near real-time forest disturbance alerts
+            radd = self._get_radd_alerts().rename("radd")
+
+            # Combine all 7 datasets
             combined_image = gfw_forest.addBands(gfw_loss) \
                                       .addBands(eufo) \
                                       .addBands(jrc_loss) \
                                       .addBands(sbtn) \
-                                      .addBands(sbtn_loss)
+                                      .addBands(sbtn_loss) \
+                                      .addBands(radd)
 
-            logger.info("Earth Engine datasets (2021-2025 GFW/SBTN Loss) loaded successfully")
+            logger.info("Earth Engine datasets (2021-2025 GFW/SBTN Loss + RADD) loaded successfully")
             return combined_image
 
         except Exception as e:
@@ -282,9 +286,37 @@ class GEEDatasetService:
             logger.warning(f"Failed to load JRC TMF. Using fallback: {e}")
             # Fallback: return empty image
             return ee.Image(0).rename("jrc_loss")
-    
+
+    def _get_radd_alerts(self):
+        """Get RADD (Radar for Detecting Deforestation) forest disturbance alerts.
+
+        Source: projects/radar-wur/raddalert/v1 (Wageningen University), see
+        https://gee-community-catalog.org/projects/radd/
+
+        The 'Alert' band stores disturbance confidence: 2 = unconfirmed, 3 = confirmed.
+        RADD alert images are cumulative per geography; sorting ascending by
+        system:time_end before mosaic() keeps the latest cumulative alerts on top
+        across all (spatially disjoint) geographies.
+        """
+        try:
+            logger.info("Loading RADD alert data...")
+
+            radd = ee.ImageCollection("projects/radar-wur/raddalert/v1")
+            radd_alert = (radd.filterMetadata("layer", "contains", "alert")
+                              .sort("system:time_end")
+                              .mosaic()
+                              .select("Alert"))
+
+            logger.info("RADD alert data loaded successfully")
+            return radd_alert
+
+        except Exception as e:
+            logger.warning(f"Failed to load RADD alerts. Using fallback: {e}")
+            # Fallback: return empty image
+            return ee.Image(0).rename("radd")
+
     def get_available_datasets(self) -> Dict[str, Any]:
-        """Get list of 6 available datasets for EUDR compliance"""
+        """Get list of 7 available datasets for EUDR compliance"""
         datasets = {
             "gfw": {
                 "name": "GFW Forest Cover",
@@ -327,13 +359,20 @@ class GEEDatasetService:
                 "band": "sbtn_loss",
                 "type": "deforestation",
                 "color": "#FF8C00"
+            },
+            "radd": {
+                "name": "RADD Forest Disturbance Alerts",
+                "description": "Radar for Detecting Deforestation (RADD) near real-time forest disturbance alerts from Wageningen University. Alert values: 2=unconfirmed, 3=confirmed.",
+                "band": "radd",
+                "type": "deforestation",
+                "color": "#FF7F50"
             }
         }
-        
+
         return {
             "datasets": datasets,
             "total_count": len(datasets),
-            "description": "6 core datasets for EUDR compliance monitoring"
+            "description": "7 core datasets for EUDR compliance monitoring"
         }
     
     def get_tile(self, dataset: str, z: int, x: int, y: int, style: str = "default") -> RedirectResponse:
@@ -352,10 +391,10 @@ class GEEDatasetService:
         
         try:
             image_band = self.ee_image.select(band_name)
-            
-            if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss"]:
+
+            if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss", "radd"]:
                 image_band = image_band.updateMask(image_band.gt(0))
-            
+
             url_format = self._get_or_create_map_id(dataset, style, image_band, vis_params)
             tile_url = url_format.format(z=z, x=x, y=y)
             
@@ -367,7 +406,18 @@ class GEEDatasetService:
     
     def _get_visualization_params(self, dataset: str, style: str) -> Dict[str, Any]:
         """Get visualization parameters for each dataset"""
-        
+
+        # RADD alerts use a confidence scale (2=unconfirmed, 3=confirmed),
+        # not a single binary value, so it needs its own visualization branch.
+        if dataset == "radd":
+            if style == "confirmed":
+                # Only confirmed alerts, solid red
+                return {'min': 3, 'max': 3, 'palette': ['#FF0000']}
+            elif style == "red":
+                return {'min': 2, 'max': 3, 'palette': ['#FF8C00', '#FF0000']}
+            # Catalog default: blue (unconfirmed) -> coral (confirmed)
+            return {'min': 2, 'max': 3, 'palette': ['blue', 'coral']}
+
         # Forest cover datasets (green colors)
         if dataset in ["gfw", "jrc", "sbtn"]:
             if style == "default":
@@ -408,7 +458,7 @@ class GEEDatasetService:
             "dataset": dataset,
             "info": dataset_info,
             "tile_url_template": f"{base_url}/api/v1/gee/tiles/{dataset}/{{z}}/{{x}}/{{y}}",
-            "styles": ["default", "light_green", "dark_green", "red", "orange", "blue", "purple"],
+            "styles": ["default", "light_green", "dark_green", "red", "orange", "blue", "purple", "confidence", "confirmed"],
             "example_urls": {
                 "leaflet": f"{base_url}/api/v1/gee/tiles/{dataset}/{{z}}/{{x}}/{{y}}",
                 "openlayers": f"{base_url}/api/v1/gee/tiles/{dataset}/{{z}}/{{x}}/{{y}}",
@@ -431,7 +481,7 @@ class GEEDatasetService:
             return {
                 "message": "Datasets refreshed successfully",
                 "timestamp": ee.Date.now().format().getInfo(),
-                "datasets_loaded": 6
+                "datasets_loaded": 7
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error refreshing datasets: {str(e)}")

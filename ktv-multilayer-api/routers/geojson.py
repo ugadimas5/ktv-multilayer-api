@@ -208,6 +208,109 @@ async def upload_geojson_notrounded(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Processing failed (notrounded): {str(e)}")
 
 
+@router.post("/upload-geojson-notrounded-nobrwa", tags=["palm-twin"], summary="Upload GeoJSON (unrounded, without BRWA overlap)")
+async def upload_geojson_notrounded_nobrwa(file: UploadFile = File(...)):
+    """
+    Clone of /upload-geojson-notrounded that SKIPS the BRWA (PostGIS) overlap analysis.
+    Returns unrounded area/percent values for GFW/JRC/SBTN/RADD without brwa_status/brwa_area_overlap.
+    Useful when the PostGIS/Neon DB is unavailable or BRWA is not needed.
+    """
+    logger.info("EUDR File Upload (notrounded, no BRWA): Starting...")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".geojson") as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            tmp_path = tmp.name
+        logger.info(f"EUDR File Upload (notrounded, no BRWA): File saved to {tmp_path}")
+        file_size_mb = len(contents) / (1024 * 1024)
+        if file_size_mb > 50:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=413, detail=f"File too large: {file_size_mb:.1f}MB. Max: 50MB")
+        try:
+            geojson_data = json.loads(contents.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+        if "type" not in geojson_data or geojson_data["type"] not in ["FeatureCollection", "Feature"]:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=400, detail="Invalid GeoJSON structure")
+
+        features = geojson_data.get("features", [])
+        if not isinstance(features, list):
+            features = [geojson_data]
+        features_count = len(features)
+        service = MultilayerService()
+        start_time = datetime.now()
+
+        async def process_feature_async(feature):
+            geometry = feature.get("geometry")
+            if not geometry or not geometry.get("type") or not geometry.get("coordinates"):
+                logger.warning("Invalid geometry format")
+                return None
+            try:
+                if geometry["type"] == "Polygon":
+                    ee_geometry = ee.Geometry.Polygon(geometry["coordinates"])
+                elif geometry["type"] == "MultiPolygon":
+                    ee_geometry = ee.Geometry.MultiPolygon(geometry["coordinates"])
+                else:
+                    logger.warning(f"Unsupported geometry type: {geometry['type']}")
+                    return None
+                loop = asyncio.get_event_loop()
+                # Dedicated path: count-based stats + RADD, tanpa BRWA (lihat _process_feature_radd_nobrwa)
+                result = await loop.run_in_executor(None, service._process_feature_radd_nobrwa, feature, service.get_ee_datasets())
+                return {
+                    "type": "Feature",
+                    "properties": {k: v for k, v in result.items() if k != 'geometry'},
+                    "geometry": geometry
+                }
+            except Exception as e:
+                logger.error(f"Error processing feature: {str(e)}")
+                return None
+
+        processed_features = await asyncio.gather(*(process_feature_async(f) for f in features))
+        processed_features = [f for f in processed_features if f]
+
+        processing_time = (datetime.now() - start_time).total_seconds()
+        os.unlink(tmp_path)
+
+        high_risk_count = sum(1 for f in processed_features
+                              if f and f["properties"].get('overall_compliance', {}).get('overall_risk') == 'high')
+        low_risk_count = len(processed_features) - high_risk_count
+
+        logger.success("EUDR File Upload (notrounded, no BRWA): Async processing completed successfully")
+        return {
+            "status": "success",
+            "message": "EUDR file processing (notrounded, no BRWA) completed (async)",
+            "file_info": {
+                "filename": file.filename,
+                "size_mb": round(file_size_mb, 2),
+                "features_count": features_count
+            },
+            "analysis_summary": {
+                "total_processed": len(processed_features),
+                "high_risk": high_risk_count,
+                "low_risk": low_risk_count,
+                "parallel_processing": True,
+                "processing_time_seconds": round(processing_time, 2)
+            },
+            "data": {
+                "type": "FeatureCollection",
+                "features": processed_features
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"EUDR File Upload error (notrounded, no BRWA): {str(e)}")
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception as cleanup_err:
+                logger.error(f"Failed to remove temp file {tmp_path}: {cleanup_err}")
+        raise HTTPException(status_code=500, detail=f"Processing failed (notrounded, no BRWA): {str(e)}")
+
+
 @router.post("/upload-geojson", tags=["EUDR File Upload"])
 async def upload_geojson_file(file: UploadFile = File(...)):
     """
