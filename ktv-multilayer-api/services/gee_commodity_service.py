@@ -13,6 +13,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
 
+from services.ee_workload_tags import workload_tag, TILE_COMMODITY
+from services.ee_auth import initialize_ee
+
 # Load environment variables
 load_dotenv()
 
@@ -139,8 +142,9 @@ class GEECommodityService:
                 email=None,
                 key_file=str(service_account_path)
             )
-            ee.Initialize(credentials)
-            
+            # Attribute compute (incl. tile EECU + workload tags) to the Cloud project.
+            initialize_ee(credentials)
+
             self.is_initialized = True
             logger.success("Earth Engine initialized successfully for commodity service")
             
@@ -365,8 +369,9 @@ class GEECommodityService:
             if country or province or district:
                 viz_image = viz_image.clip(bounds)
 
-            map_id = viz_image.getMapId(vis_params)
-            
+            with workload_tag(TILE_COMMODITY):
+                map_id = viz_image.getMapId(vis_params)
+
             # Cache it
             self._map_id_cache[cache_key] = map_id
             self._cache_timestamp[cache_key] = datetime.now().timestamp()

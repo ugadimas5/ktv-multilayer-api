@@ -5,6 +5,8 @@ from fastapi import HTTPException
 from fastapi.responses import RedirectResponse
 import ee
 
+from services.ee_workload_tags import workload_tag, TILE_LANDSLIDE
+
 class GEELandslideService:
     """
     Google Earth Engine Landslide Service
@@ -131,9 +133,10 @@ class GEELandslideService:
             
         # Clip to region
         landslide_img = landslide_img.clip(region)
-        
-        map_id = ee.Image(landslide_img).getMapId(vis_params)
-        
+
+        with workload_tag(TILE_LANDSLIDE):
+            map_id = ee.Image(landslide_img).getMapId(vis_params)
+
         # Generate tile URL
         tile_url = map_id['tile_fetcher'].url_format.format(x=x, y=y, z=z)
             

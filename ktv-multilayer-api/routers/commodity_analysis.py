@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from authentication.auth_helper import auth_init_ee
+from services.ee_workload_tags import workload_tag, COMMODITY_ANALYSIS
 
 router = APIRouter()
 
@@ -103,11 +104,12 @@ async def commodity_analysis(
         # Gunakan selfMask() agar piksel 0 transparan; hanya 1 yang berwarna.
         try:
             viz_image = binary_image.selfMask()
-            map_id_dict = viz_image.getMapId({
-                "min": 1,
-                "max": 1,
-                "palette": ["FF0000"],  # merah untuk piksel bernilai 1
-            })
+            with workload_tag(COMMODITY_ANALYSIS):
+                map_id_dict = viz_image.getMapId({
+                    "min": 1,
+                    "max": 1,
+                    "palette": ["FF0000"],  # merah untuk piksel bernilai 1
+                })
             tile_url = map_id_dict["tile_fetcher"].url_format
         except Exception as e:
             logger.warning(f"Failed to generate tile URL: {e}")

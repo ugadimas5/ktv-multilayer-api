@@ -14,6 +14,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
 
+from services.ee_workload_tags import workload_tag, TILE_FLOOD
+from services.ee_auth import initialize_ee
+
 # Load environment variables
 load_dotenv()
 
@@ -158,7 +161,8 @@ class GEEFloodService:
                 key_file=str(service_account_path)
             )
             logger.info("Credentials loaded, calling ee.Initialize()...")
-            ee.Initialize(credentials)
+            # Attribute compute (incl. tile EECU + workload tags) to the Cloud project.
+            initialize_ee(credentials)
             
             self.is_initialized = True
             logger.success("Earth Engine initialized successfully for flood service")
@@ -515,8 +519,9 @@ class GEEFloodService:
             # Using bounds (which is either custom or default) ensures we don't process/show world-wide
             image = image.clip(bounds)
 
-            map_id = image.getMapId(vis_params)
-            
+            with workload_tag(TILE_FLOOD):
+                map_id = image.getMapId(vis_params)
+
             # Cache it
             self._map_id_cache[cache_key] = map_id
             self._cache_timestamp[cache_key] = datetime.now().timestamp()

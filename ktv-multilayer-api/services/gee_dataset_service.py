@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 from loguru import logger
 
+from services.ee_workload_tags import workload_tag, TILE_DATASET
+from services.ee_auth import initialize_ee
+
 # Load environment variables
 load_dotenv()
 
@@ -47,9 +50,10 @@ class GEEDatasetService:
             return self.map_id_cache[cache_key]
         
         logger.info(f"Generating new Map ID for {cache_key}")
-        map_id = image_band.getMapId(vis_params)
+        with workload_tag(TILE_DATASET):
+            map_id = image_band.getMapId(vis_params)
         url_format = map_id['tile_fetcher'].url_format
-        
+
         self.map_id_cache[cache_key] = url_format
         return url_format
     
@@ -62,9 +66,10 @@ class GEEDatasetService:
             return self.indonesia_map_id_cache[cache_key]
         
         logger.info(f"Generating new Indonesia Map ID for {cache_key}")
-        map_id = image_band.getMapId(vis_params)
+        with workload_tag(TILE_DATASET):
+            map_id = image_band.getMapId(vis_params)
         url_format = map_id['tile_fetcher'].url_format
-        
+
         self.indonesia_map_id_cache[cache_key] = url_format
         return url_format
     
@@ -93,9 +98,10 @@ class GEEDatasetService:
                         if dataset in ["gfw_loss", "jrc_loss", "sbtn_loss", "radd"]:
                             image_band = image_band.updateMask(image_band.gt(0))
                         
-                        map_id = image_band.getMapId(vis_params)
+                        with workload_tag(TILE_DATASET):
+                            map_id = image_band.getMapId(vis_params)
                         self.map_id_cache[cache_key] = map_id['tile_fetcher'].url_format
-                        
+
                         logger.info(f"Pre-generated Map ID for {cache_key}")
                         
                 except Exception as e:
@@ -165,7 +171,9 @@ class GEEDatasetService:
                 email=None,  # Will be read from the JSON file
                 key_file=str(service_account_path)
             )
-            ee.Initialize(credentials)
+            # Attribute compute (incl. tile EECU + workload tags) to the Cloud
+            # project so it shows up in that project's Metrics Explorer.
+            initialize_ee(credentials)
 
             # Load datasets
             self.ee_image = self._get_ee_datasets()

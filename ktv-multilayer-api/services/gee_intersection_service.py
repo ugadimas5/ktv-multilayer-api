@@ -13,6 +13,7 @@ from datetime import datetime
 from services.gee_commodity_service import gee_commodity_service
 from services.gee_flood_service import gee_flood_service
 from services.gee_landslide_service import gee_landslide_service
+from services.ee_workload_tags import workload_tag, TILE_INTERSECTION
 
 class GEEIntersectionService:
     """Service for GEE intersection analysis and visualization"""
@@ -99,8 +100,9 @@ class GEEIntersectionService:
 
             # Get Map ID
             vis_params = self.styles.get(type, {'min': 0, 'max': 1})
-            map_id = image.getMapId(vis_params)
-            
+            with workload_tag(TILE_INTERSECTION):
+                map_id = image.getMapId(vis_params)
+
             # Cache
             self._map_id_cache[cache_key] = map_id
             self._cache_timestamp[cache_key] = datetime.now().timestamp()
