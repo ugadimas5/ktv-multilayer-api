@@ -204,7 +204,8 @@ class MultilayerService:
             # Return zeros for all bands on error
             return {band: 0 for band in band_names}
     
-    def get_ee_datasets(self):
+    @staticmethod
+    def get_ee_datasets():
         """
         Build simplified dataset stack dengan 3 dataset utama: GFW Loss, JRC Loss, SBTN Loss
         Fokus pada deforestation detection 2021-2024 untuk KTV compliance

@@ -13,14 +13,18 @@ metrics are unavailable until that IAM grant is in place.
 """
 
 import os
+from typing import Optional
 
 import ee
 from loguru import logger
 
 
-def initialize_ee(credentials) -> str:
-    """Initialize Earth Engine; return the project actually used ("" if legacy)."""
-    project = os.getenv("GOOGLE_CLOUD_PROJECT_ID") or None
+def initialize_ee(credentials, project: Optional[str] = None) -> str:
+    """Initialize Earth Engine; return the project actually used ("" if legacy).
+
+    GOOGLE_CLOUD_PROJECT_ID takes precedence; `project` is used when it is unset.
+    """
+    project = os.getenv("GOOGLE_CLOUD_PROJECT_ID") or project or None
 
     if project:
         try:

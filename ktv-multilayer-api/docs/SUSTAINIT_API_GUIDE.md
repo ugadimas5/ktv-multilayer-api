@@ -15,6 +15,10 @@ Currently, all endpoints are open access. No API key required.
 
 ## 📍 Endpoints Overview
 
+Every endpoint returns `data` as a FeatureCollection with exactly one feature per input
+feature, in input order, keeping the input properties (e.g. `plot_id`, `name`) and adding
+the analysis fields. Errors are returned as non-2xx statuses (see Error Handling).
+
 All Sustainit endpoints are tagged with `sustainit` and follow the pattern `/api/v1/{endpoint-name}`.
 
 | Endpoint | Method | Description | Use Case |
@@ -42,8 +46,8 @@ curl -X POST "https://api.sustainit.id/api/v1/protected-area" \
 ```
 
 ### Request Body
-- **file**: GeoJSON file (max 50MB)
-- Supported geometry: Polygon, MultiPolygon, Point, LineString
+- **file**: GeoJSON FeatureCollection (max 100MB, 1000 features)
+- Supported geometry: Polygon, MultiPolygon
 
 ### Response
 
@@ -67,9 +71,9 @@ curl -X POST "https://api.sustainit.id/api/v1/protected-area" \
     "features": [{
       "type": "Feature",
       "properties": {
+        "plot_id": "plot-0",
         "wdpa_status": "compliant",
-        "wdpa_categories": [],
-        "analysis_timestamp": "2025-12-02T08:00:00Z"
+        "wdpa_categories": []
       },
       "geometry": {...}
     }]
@@ -79,20 +83,20 @@ curl -X POST "https://api.sustainit.id/api/v1/protected-area" \
 
 ### WDPA Status Classification
 
-- **compliant**: No protected area intersection or only sustainable use zones (V, VI)
-- **indicative**: Protected area with unclear status (Not Assigned, Not Reported)
-- **non-compliant**: Intersection with strict protection zones (Ia, Ib, II, III, IV)
+- **compliant**: No protected area intersection
+- **indicative**: Intersection with sustainable use zones (V, VI) or areas with unclear status (Not Assigned, Not Reported, Not Applicable)
+- **non_compliant**: Intersection with strict protection zones (Ia, Ib, II, III, IV)
 
 ### IUCN Categories
 
 | Category | Description | Status |
 |----------|-------------|--------|
-| Ia, Ib | Strict Nature Reserve, Wilderness Area | Non-compliant |
-| II | National Park | Non-compliant |
-| III | Natural Monument | Non-compliant |
-| IV | Habitat/Species Management Area | Non-compliant |
-| V | Protected Landscape/Seascape | Indicative |
-| VI | Managed Resource Protected Area | Indicative |
+| Ia, Ib | Strict Nature Reserve, Wilderness Area | non_compliant |
+| II | National Park | non_compliant |
+| III | Natural Monument | non_compliant |
+| IV | Habitat/Species Management Area | non_compliant |
+| V | Protected Landscape/Seascape | indicative |
+| VI | Managed Resource Protected Area | indicative |
 
 ---
 
@@ -111,7 +115,7 @@ curl -X POST "https://api.sustainit.id/api/v1/deforestation" \
 ```
 
 ### Request Body
-- **file**: GeoJSON file (max 50MB)
+- **file**: GeoJSON FeatureCollection (max 100MB, 1000 features)
 - Supported geometry: Polygon, MultiPolygon
 
 ### Response
@@ -135,14 +139,17 @@ curl -X POST "https://api.sustainit.id/api/v1/deforestation" \
     "features": [{
       "type": "Feature",
       "properties": {
-        "gfw_loss_area_ha": 2.5,
-        "gfw_loss_percent": 5.2,
-        "jrc_loss_area_ha": 1.8,
-        "jrc_loss_percent": 3.7,
-        "sbtn_loss_area_ha": 2.1,
-        "sbtn_loss_percent": 4.3,
-        "risk_level": "High",
-        "analysis_timestamp": "2025-12-02T08:00:00Z"
+        "plot_id": "plot-0",
+        "total_area_hectares": 48.1,
+        "overall_compliance": {
+          "overall_risk": "high",
+          "compliance_status": "NON_COMPLIANT",
+          "high_risk_datasets": ["GFW Forest Loss", "JRC Forest Loss", "SBTN Natural Lands Loss"],
+          "total_high_risk_indicators": 3
+        },
+        "gfw_loss": {"gfw_loss_stat": "high", "gfw_loss_area": 2.5, "gfw_loss_percent": 5.2, "gfw_loss_year_compilation": 2023},
+        "jrc_loss": {"jrc_loss_stat": "high", "jrc_loss_area": 1.8, "jrc_loss_percent": 3.7, "jrc_loss_year_compilation": 2022},
+        "sbtn_loss": {"sbtn_loss_stat": "high", "sbtn_loss_area": 2.1, "sbtn_loss_percent": 4.3, "sbtn_loss_year_compilation": 2023}
       },
       "geometry": {...}
     }]
@@ -151,6 +158,8 @@ curl -X POST "https://api.sustainit.id/api/v1/deforestation" \
 ```
 
 ### Risk Classification
+
+Loss areas are in hectares (pixel-area weighted), percentages are 0-100 of the plot area.
 
 - **High Risk**: Any loss detected > 0 hectares (non-EUDR compliant)
 - **Low Risk**: No loss detected (EUDR compliant)
@@ -180,7 +189,7 @@ curl -X POST "https://api.sustainit.id/api/v1/validate-geometry" \
 ```
 
 ### Request Body
-- **file**: GeoJSON file (max 50MB)
+- **file**: GeoJSON FeatureCollection (max 100MB, 1000 features)
 - Supported geometry: Polygon, MultiPolygon
 
 ### Response
@@ -204,6 +213,7 @@ curl -X POST "https://api.sustainit.id/api/v1/validate-geometry" \
     "features": [{
       "type": "Feature",
       "properties": {
+        "plot_id": "plot-0",
         "validation_status": "valid",
         "is_valid": true,
         "self_intersection": false,
@@ -226,8 +236,10 @@ curl -X POST "https://api.sustainit.id/api/v1/validate-geometry" \
 | **is_valid** | Overall geometry validity | Critical |
 | **self_intersection** | Polygon intersects itself | High |
 | **duplicate_vertices** | Repeated coordinate points | Medium |
-| **zero_area** | Polygon with no/minimal area | High |
-| **not_ring** | Unclosed polygon boundary | Critical |
+| **zero_area** | Polygon with no/minimal area (< 1 m²) | High |
+| **not_ring** | Unclosed ring, fewer than 4 positions, or malformed/out-of-range coordinates | Critical |
+
+`area_sqm` is the geodesic (WGS84) area in m². The input geometry is returned unchanged.
 
 ---
 
@@ -246,8 +258,8 @@ curl -X POST "https://api.sustainit.id/api/v1/rainfall" \
 ```
 
 ### Request Body
-- **file**: GeoJSON file (max 50MB)
-- Supported geometry: Polygon, MultiPolygon, Point, LineString
+- **file**: GeoJSON FeatureCollection (max 100MB, 1000 features)
+- Supported geometry: Polygon, MultiPolygon
 
 ### Response
 
@@ -261,7 +273,7 @@ curl -X POST "https://api.sustainit.id/api/v1/rainfall" \
   },
   "analysis_summary": {
     "total_processed": 60,
-    "average_rainfall_mm": 450.5,
+    "average_rainfall_mm": 2450.3,
     "processing_time_seconds": 180.3
   },
   "data": {
@@ -269,17 +281,17 @@ curl -X POST "https://api.sustainit.id/api/v1/rainfall" \
     "features": [{
       "type": "Feature",
       "properties": {
-        "rainfall_mean_mm": 450.5,
-        "rainfall_min_mm": 420.0,
-        "rainfall_max_mm": 480.0,
-        "rainfall_std_mm": 15.3,
+        "plot_id": "plot-0",
+        "rainfall_mean_mm": 2450.3,
+        "rainfall_min_mm": 2300.1,
+        "rainfall_max_mm": 2600.8,
+        "rainfall_std_mm": 45.2,
         "area_hectares": 25.5,
         "analysis_period": {
-          "start_date": "2023-10-01",
-          "end_date": "2024-01-31"
+          "start_date": "2025-01-01",
+          "end_date": "2025-12-31"
         },
-        "data_source": "CHIRPS Daily (downscaled to 100m)",
-        "resolution": "100m"
+        "data_source": "CHIRPS Pentad (annual total, bilinear-resampled)"
       },
       "geometry": {...}
     }]
@@ -289,11 +301,11 @@ curl -X POST "https://api.sustainit.id/api/v1/rainfall" \
 
 ### Data Source
 
-- **Dataset**: CHIRPS Daily (UCSB-CHG/CHIRPS/DAILY)
-- **Original Resolution**: ~5.5km (0.05 degrees)
-- **Downscaled Resolution**: 100 meters
-- **Method**: Bilinear interpolation with Sentinel-2 projection
-- **Default Period**: 2023-10-01 to 2024-01-31 (3 months)
+- **Dataset**: CHIRPS Pentad (UCSB-CHG/CHIRPS/PENTAD)
+- **Original Resolution**: ~5.5km (0.05 degrees), bilinear-resampled and reduced at 30 m
+- **Statistic**: Annual rainfall total (mm); mean/min/max/std over the plot
+- **Period**: Latest complete calendar year (the previous year from March onwards)
+- **Coverage**: 50°S-50°N; values are `null` outside it
 
 ### Use Cases
 
@@ -319,7 +331,7 @@ curl -X POST "https://api.sustainit.id/api/v1/ghg-emission" \
 ```
 
 ### Request Body
-- **file**: GeoJSON file (max 50MB)
+- **file**: GeoJSON FeatureCollection (max 100MB, 1000 features)
 - Supported geometry: Polygon, MultiPolygon
 - Optional property in GeoJSON: `forest_type` ("Primary Forest" or "Secondary Forest")
 
@@ -335,48 +347,31 @@ curl -X POST "https://api.sustainit.id/api/v1/ghg-emission" \
   },
   "analysis_summary": {
     "total_processed": 40,
-    "high_risk": 12,
-    "low_risk": 28,
-    "total_deforestation_area_ha": 45.5,
     "total_net_emission_tco2e": 12450.75,
-    "datasets": {
-      "gfw": {
-        "total_area_ha": 18.5,
-        "total_emission_tco2e": 5200.5
-      },
-      "jrc": {
-        "total_area_ha": 15.0,
-        "total_emission_tco2e": 4100.25
-      },
-      "sbtn": {
-        "total_area_ha": 12.0,
-        "total_emission_tco2e": 3150.0
-      }
-    },
-    "processing_time_seconds": 240.8
+    "processing_time_seconds": 40.8
   },
   "data": {
     "type": "FeatureCollection",
     "features": [{
       "type": "Feature",
       "properties": {
-        "gfw_loss_area_ha": 2.5,
+        "plot_id": "plot-0",
         "gfw_ghg_emission": {
           "area_hectares": 2.5,
           "forest_type": "Secondary Forest",
           "gross_co2_tco2e": 700.0,
-          "gross_n2o_tco2e": 0.52,
-          "gross_ch4_tco2e": 0.08,
-          "total_gross_emission_tco2e": 700.6,
+          "gross_n2o_tco2e": 0.0013,
+          "gross_ch4_tco2e": 0.0001,
+          "total_gross_emission_tco2e": 700.0014,
           "soc_emission_tco2e": 65.0,
-          "gross_emission_with_soc_tco2e": 765.6,
+          "gross_emission_with_soc_tco2e": 765.0014,
           "post_carbon_stock_tc": 142.5,
-          "net_emission_tco2e": 623.1,
-          "emission_intensity_tco2e_per_ha": 249.24
+          "net_emission_tco2e": 622.5014,
+          "emission_intensity_tco2e_per_ha": 249.0006
         },
         "jrc_ghg_emission": {...},
         "sbtn_ghg_emission": {...},
-        "total_net_emission_tco2e": 1540.25,
+        "total_net_emission_tco2e": 622.5014,
         "forest_type": "Secondary Forest"
       },
       "geometry": {...}
@@ -413,7 +408,7 @@ Based on IPCC guidelines with default parameters:
 
 1. **Step 1**: Calculate deforestation areas (GFW, JRC, SBTN)
 2. **Step 2**: Calculate GHG emissions for each detected deforestation area
-3. **Step 3**: Aggregate total emissions per feature and dataset
+3. **Step 3**: `total_net_emission_tco2e` per feature is the largest of the three datasets (they overlap, so they are not summed)
 
 ---
 
@@ -423,10 +418,10 @@ Based on IPCC guidelines with default parameters:
 
 | Parameter | Specification |
 |-----------|--------------|
-| **Max File Size** | 50 MB |
+| **Max File Size** | 100 MB (max 1000 features) |
 | **Formats** | .geojson, .json |
 | **Encoding** | UTF-8 |
-| **Geometry Types** | Polygon, MultiPolygon (Point, LineString for some endpoints) |
+| **Geometry Types** | Polygon, MultiPolygon |
 | **Coordinate System** | WGS84 (EPSG:4326) |
 
 ### Response Format
@@ -453,15 +448,17 @@ All endpoints return standardized response structure:
 | HTTP Code | Error | Description |
 |-----------|-------|-------------|
 | 400 | Bad Request | Invalid JSON or GeoJSON format |
-| 413 | Payload Too Large | File exceeds 50MB limit |
-| 422 | Validation Error | Invalid geometry or parameters |
+| 413 | Payload Too Large | File exceeds 100MB or 1000 features |
+| 422 | Validation Error | A feature has a missing or malformed polygon (analysis endpoints) |
 | 500 | Internal Server Error | Processing failed |
+| 502 | Bad Gateway | Earth Engine returned an error |
+| 503 | Service Unavailable | Earth Engine could not be initialized |
 
 ### Error Response Example
 
 ```json
 {
-  "detail": "File too large: 55.2MB. Max: 50MB"
+  "detail": "File too large: 105.2MB. Max: 100MB"
 }
 ```
 
